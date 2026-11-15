@@ -62,6 +62,13 @@
 * **3D 座標・行列演算:** `kernel/arch/dreamcast/math/matrix3d.c`（`mat_translate`, `mat_scale`, `mat_rotate_x/y/z`, `mat_rotate`, `mat_perspective`, `mat_lookat` および `exports.txt` の `kbd_*` / `mat_*` エクスポート）
 * **サイズ削減効果:** `libkallisti.a` が純正 `4,480,822` bytes → カスタム版 `4,187,802` bytes（**約 293 KB 削減**）
 
+### `libkosvn` エンジンの高速化・安定化機構
+* **差分行（Dirty-Row）部分 VRAM 転送 & 増分タイプライター描画 (`kosvn_text.c`):** `1024x512` テキストキャンバス（約 1 MB）の毎フレーム全再描画・全転送を廃止し、新規文字のみを描画して変更スキャンライン（1 行分 約 56 KB）だけを PVR VRAM へ転送（枠溢れクリップ時の再描画ループ抑止ガード付き）。
+* **PVR VRAM 16スロット LRU テクスチャキャッシュ (`kosvn_gfx.c`):** 背景・立ち絵・カットインを VRAM 上で LRU キャッシュし、`L+X` マルチサイト切替時の再ロード／プロシージャル再生成を 0ms 化。
+* **PowerVR2 ポリゴンヘッダ 16スロット事前コンパイルキャッシュ (`kosvn_gfx.c`):** 単色ポリゴンヘッダ（OP/TR）およびテクスチャポリゴンヘッダ（`hdr_cache[16]`、32 KB アライメント衝突を回避する線形一致走査＋ラウンドロビン更新）により毎フレームの `pvr_poly_compile()` 負荷を削減。
+* **FNV-1a 32bit ラベルハッシュ & 高速条件式評価 (`kosvn_script.c`):** スクリプト読込時に全 `LABEL`（最大 128 個）の FNV-1a ハッシュを計算し、`GOTO` / `CALL` / `@call:` ジャンプおよび `IF` / `IF_AND` / `OPTION_IF` の比較演算を高速化。
+* **マルチサイト台詞保持・`CHOICE` 復帰保護・VMU `KVN2` フォーマット (`kosvn_script.c` / `kosvn_vmu.c`):** サイト切替時や `CHOICE` 行でのクイックロード時に直前の台詞テキスト・コールスタック・全 256 フラグ・カットイン状態を完全復元。
+
 ---
 
 ## 3. ディレクトリ構成
@@ -127,12 +134,16 @@ make -C $KOS_BASE/addons
 
 ビルドが成功すると、`lib/dreamcast/libkallisti.a` および `addons/lib/dreamcast/libkosvn.a` が生成されます。
 
-### ステップ 3: サンプルゲーム (`kosvn_demo.elf`) のビルド
+### ステップ 3: サンプルゲーム (`kosvn_demo.elf` / `kosvn_demo.cdi`) のビルド
 ```bash
+# SH-4 ELF バイナリのビルド (dcload-ip / エミュレータ直接起動用)
 make -C $KOS_BASE/examples/dreamcast/kosvn_demo clean all
+
+# 実機・エミュレータ用セルフブート CDI ディスクイメージの生成 (mkdcdisc 使用)
+make -C $KOS_BASE/examples/dreamcast/kosvn_demo cdi
 ```
 
-`examples/dreamcast/kosvn_demo/kosvn_demo.elf`（エントリーポイント `0x8c010000` の SH-4 ELF）が生成されます。`dcload-ip` やエミュレータ（Flycast 等）でそのまま起動できます。
+`examples/dreamcast/kosvn_demo/kosvn_demo.elf`（エントリーポイント `0x8c010000` の SH-4 ELF）およびブート可能な `kosvn_demo.cdi` が生成されます。`dcload-ip` やエミュレータ（Flycast 等）、実機 CD-R でそのまま起動できます。
 
 ---
 
@@ -221,8 +232,8 @@ $(TARGET): $(OBJS)
 | `OPTION` | `OPTION <表示テキスト> \| <ジャンプ先>` | `CHOICE` の直下に記述します。ジャンプ先には通常の `LABEL` に加え、`@call:<LABEL>`（調査サブルーチン呼び出し）や `@site:<0\|1>`（視点切替）を指定できます。 |
 | `OPTION_IF` | `OPTION_IF <フラグ番号> <演算子> <値> <表示テキスト> \| <ジャンプ先>` | 条件を満たしたときだけメニューに表示されるコマンド／選択肢を定義します（演算子は `==`, `!=`, `>=`, `<=`, `>`, `<`）。 |
 | `SITE_INIT` | `SITE_INIT <ID(0\|1)> <表示名> <開始LABEL>` | マルチサイト（Multi-Sight）機能を有効化し、各主人公（例: `0 小次郎`, `1 まりな`）の開始ラベルと右上HUD表示名を登録します。 |
-| `SITE_SWITCH` | `SITE_SWITCH <ID(0\|1)>` | 現在のサイトの行位置・背景・立ち絵・カットイン・BGM を保存し、指定サイトの実行状態へ即座に切り替えます。 |
-| `SITE_LOCK` | `SITE_LOCK [ID] [0\|1]` | 指定サイト（省略時は現在サイト）のロック状態フラグを設定します。 |
+| `SITE_SWITCH` | `SITE_SWITCH <ID(0\|1)>` | 現在のサイトの行位置・表示中台詞（`site_dialogues`）・コールスタック・背景・立ち絵・カットイン・BGM を保存し、指定サイトの実行状態へ即座に切り替えます。 |
+| `SITE_LOCK` | `SITE_LOCK [ID] [0\|1]` | 指定サイト（省略時は現在サイト）のロック状態を設定します。ロック中（`1`）はプレイヤーによる `L+X` ザッピングおよび `@site:` 選択肢の遷移が抑止され、`[SITE LOCKED]` 通知を表示します。 |
 | `LABEL` | `LABEL <ラベル名>` | `GOTO` / `CALL` / `OPTION` / `IF` 等のジャンプ先ラベルを定義します（最大 128 個）。 |
 | `GOTO` | `GOTO <ラベル名>` | 指定した `LABEL` へ無条件ジャンプします。 |
 | `CALL` | `CALL <ラベル名>` | 現在位置をコールスタック（最大 8 段）に積んでサブルーチンラベルへジャンプします。`CHOICE` 内の `@call:<LABEL>` でも利用可能。 |
@@ -240,38 +251,85 @@ $(TARGET): $(OBJS)
 | `VOICE` | `VOICE <アセット指定 \| stop>` | 専用ボイスチャンネルで台詞音声を再生します（次の台詞送りやサイト切替時に自動停止）。 |
 | `END` | `END` | シナリオを終了し、`vn_run_script()` を抜けます。 |
 
-### シナリオ記述例
+### シナリオ記述例（EVE シリーズ型 Multi-Sight 捜査 ADV）
 
 ```text
-# シーン1：夜の導入
-SET 0 0
+# 導入〜マルチサイト初期化
+SET 1 0
+SET 2 0
+SET 3 0
 BG proc:night_sky
 BGM proc:ambient_calm
 FADE 0xFF000000 0
 FADE 0x00000000 600
 WAIT_FX
 
-CHAR left proc:sakura_smile
-NAME サクラ
-TEXT Dreamcast 実機でノベルゲームが動いているよ！\nこの行は強制改行のテストです。
+SITE_INIT 0 小次郎 site_kojiro
+SITE_INIT 1 まりな site_marina
+SITE_SWITCH 0
 
-NAME レイ
-TEXT どちらのルートを確認する？
+LABEL site_kojiro
+BG proc:night_sky
+BGM proc:ambient_calm
+CHAR left proc:sakura_normal
+VOICE proc:voice_kojiro
+NAME 小次郎
+TEXT 「真夜中の事務所か……事件の手掛かりを探そう。\nどのコマンドで捜査を進める？」
 
 CHOICE
-OPTION VMUセーブの説明を見る | route_a
-OPTION LANデバッグの説明を見る | route_b
+OPTION 【見る】周囲を調べる | @call:kojiro_look
+OPTION_IF 1 == 0 【調べる】机のカードキー | @call:kojiro_desk
+OPTION_IF 1 == 1 【調べる】金庫のマイクロフィルム | @call:kojiro_film
+OPTION 【サイト切替】まりな側へ (L+X) | @site:1
+OPTION_IF 2 == 1 【突入】ロック解除・合流へ | finale_converge
 
-LABEL route_a
-SET 0 1
-NAME サクラ
-TEXT Lトリガー＋Aボタンで、今の行やフラグも丸ごとVMUに保存できるよ！
+LABEL kojiro_desk
+CUTIN proc:item_keycard
+SET 1 1
+ADD 3 1
+NAME 小次郎
+TEXT 「机の引き出しにセキュリティカードキーがある！\nこれで奥のファイルも開けられそうだ。」
+CUTIN none
+RET
+
+LABEL site_marina
+BG proc:cyber_lab
+BGM proc:ambient_tense
+CHAR right proc:rei_normal
+VOICE proc:voice_marina
+NAME まりな
+TEXT 「地下ラボへ潜入完了。小次郎さん、聞こえる？\n端末ロックを解除すれば合流できるわ！」
+
+CHOICE
+OPTION 【調べる】メイン端末を解析 | @call:marina_hack
+OPTION 【サイト切替】小次郎側へ (L+X) | @site:0
+
+LABEL marina_hack
+CUTIN proc:item_microfilm
+SET 2 1
+ADD 3 1
+SHAKE 6.0 280
+SE proc:flash
+NAME まりな
+TEXT 「ハッキング完了！セキュリティが解除されたわ！\n小次郎さんのルートへ戻って突入しましょう！」
+CUTIN none
+RET
+
+LABEL finale_converge
+CLEAR_CHAR all
+CUTIN none
+BG proc:shrine_sunset
+BGM proc:ambient_calm
+CHAR left proc:sakura_smile
+CHAR right proc:rei_smile
+IF_AND 1 == 1 2 == 1 GOTO finale_true
+NAME まりな
+TEXT 「合流成功ね！残りの証拠品も揃えて完璧を目指しましょう！」
 GOTO ending
 
-LABEL route_b
-SET 0 2
-NAME レイ
-TEXT UDP ポート 47890 にリアルタイムでメモリ残量とFPSが飛んでいるよ。
+LABEL finale_true
+NAME 小次郎＆まりな
+TEXT 「全サイト連動＆証拠品解析まで完全クリアだ！\nこれぞDreamcast専用EVEエンジン！」
 
 LABEL ending
 BGM stop
@@ -320,9 +378,9 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 | **`Y` ボタン** | **バックログ (`BACKLOG`)** 履歴画面の開閉 |
 | **十字キー 上下** | 選択肢のカーソル移動 ／ バックログ表示中のスクロール |
 | **`R` トリガー（長押し）** | **スキップ (`SKIP`)** 早送り |
-| **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ** |
-| **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（全サイト・背景・立ち絵・カットイン・BGM・256フラグを復元） |
-| **`L` トリガー + `X`** | **Multi-Sight サイトザッピング切替**（有効時に小次郎⇔まりな等の視点を即時切替） |
+| **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ**（`KVN2` 形式：全サイト状態・コールスタック・256 フラグ・BGM/立ち絵/カットインを一括保存） |
+| **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（`CHOICE` 待機中の行へのロード時は直前台詞も自動復元） |
+| **`L` トリガー + `X`** | **Multi-Sight サイトザッピング切替**（有効時に小次郎⇔まりな等の視点を即時切替、`SITE_LOCK` 中は `[SITE LOCKED]` 通知を表示してブロック） |
 | **`START` ボタン** | ゲームループ終了 |
 
 ---
