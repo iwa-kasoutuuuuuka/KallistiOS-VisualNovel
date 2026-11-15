@@ -1,5 +1,7 @@
 TARGET = kosvn_demo.elf
 OBJS = main.o romdisk.o
+CDI = kosvn_demo.cdi
+MKDCDISC = /h/DC/tools/mkdcdisc_bin/mkdcdisc_win/mkdcdisc64.exe
 KOS_ROMDISK_DIR = romdisk
 KOS_CFLAGS += -I$(KOS_BASE)/addons/include -Wall -Wextra
 
@@ -11,10 +13,13 @@ clean: rm-elf
 	-rm -f $(OBJS)
 
 rm-elf:
-	-rm -f $(TARGET) romdisk.*
+	-rm -f $(TARGET) $(CDI) romdisk.*
 
 $(TARGET): $(OBJS)
 	kos-cc -o $(TARGET) $(OBJS) -L$(KOS_BASE)/addons/lib/$(KOS_ARCH) -lkosvn
+
+cdi: $(TARGET)
+	$(MKDCDISC) -e $(TARGET) -o $(CDI) -n "KOSVN_DEMO"
 
 run: $(TARGET)
 	$(KOS_LOADER) $(TARGET)

@@ -52,6 +52,7 @@ typedef struct vn_save_state {
     char     script_path[64];
     char     bg_name[64];
     char     char_names[VN_MAX_SPRITES][64];
+    char     speaker_name[64];
     char     bgm_name[64];
     int32_t  flags[VN_MAX_FLAGS];
 } vn_save_state_t;

@@ -23,6 +23,7 @@ static struct {
     char           **lines;
     uint32_t         line_count;
     uint32_t         pc;
+    uint32_t         cur_cmd_line;
     bool             ended;
     bool             waiting_fx;
     vn_label_entry_t labels[VN_MAX_LABELS];
@@ -109,6 +110,7 @@ void vn_script_unload(void) {
     }
     vm_st.line_count = 0;
     vm_st.pc = 0;
+    vm_st.cur_cmd_line = 0;
     vm_st.label_count = 0;
     vm_st.ended = true;
     vm_st.waiting_fx = false;
@@ -192,6 +194,7 @@ int vn_script_load(const char *path) {
     vm_st.lines = arr;
     vm_st.line_count = idx;
     vm_st.pc = 0U;
+    vm_st.cur_cmd_line = 0U;
     vm_st.ended = false;
     vm_st.waiting_fx = false;
     vn_copy_str(vm_st.path, sizeof(vm_st.path), path);
@@ -215,6 +218,7 @@ int vn_script_jump_line(uint32_t line) {
     if(line >= vm_st.line_count)
         return -1;
     vm_st.pc = line;
+    vm_st.cur_cmd_line = line;
     vm_st.ended = false;
     vm_st.waiting_fx = false;
     return 0;
@@ -231,7 +235,7 @@ int32_t vn_script_get_flag(int idx) {
     return vm_st.flags[idx];
 }
 
-uint32_t vn_script_get_line(void) { return vm_st.pc; }
+uint32_t vn_script_get_line(void) { return vm_st.cur_cmd_line; }
 const char *vn_script_get_path(void) { return vm_st.path; }
 bool vn_script_is_waiting_fx(void) { return vm_st.waiting_fx; }
 void vn_script_clear_wait_fx(void) { vm_st.waiting_fx = false; }
@@ -239,6 +243,7 @@ bool vn_script_is_ended(void) { return vm_st.ended; }
 
 int vn_script_advance(void) {
     while(vm_st.pc < vm_st.line_count) {
+        uint32_t line_idx = vm_st.pc;
         const char *line = vm_st.lines[vm_st.pc++];
         if(line[0] == '\0' || line[0] == '#')
             continue;
@@ -269,6 +274,7 @@ int vn_script_advance(void) {
             unescape_newlines(text_buf, sizeof(text_buf), arg);
             vn_text_clear_choices();
             vn_text_set_dialogue(text_buf);
+            vm_st.cur_cmd_line = line_idx;
             return 1;
         } else if(strcmp(cmd, "CHOICE") == 0) {
             vn_text_clear_choices();
@@ -290,6 +296,7 @@ int vn_script_advance(void) {
                 }
             }
             vn_text_reveal_all();
+            vm_st.cur_cmd_line = line_idx;
             return 1;
         } else if(strcmp(cmd, "GOTO") == 0) {
             vn_script_jump_label(arg);
@@ -325,6 +332,7 @@ int vn_script_advance(void) {
                 vn_fx_fade((uint32_t)col, (uint32_t)ms);
         } else if(strcmp(cmd, "WAIT_FX") == 0) {
             vm_st.waiting_fx = true;
+            vm_st.cur_cmd_line = line_idx;
             return 1;
         } else if(strcmp(cmd, "SHAKE") == 0) {
             float amp = 6.0f;
@@ -339,6 +347,7 @@ int vn_script_advance(void) {
         } else if(strcmp(cmd, "SE") == 0) {
             vn_audio_play_se(arg);
         } else if(strcmp(cmd, "END") == 0) {
+            vm_st.cur_cmd_line = line_idx;
             vm_st.ended = true;
             return 0;
         } else {
@@ -346,6 +355,7 @@ int vn_script_advance(void) {
         }
     }
 
+    vm_st.cur_cmd_line = vm_st.line_count;
     vm_st.ended = true;
     return 0;
 }

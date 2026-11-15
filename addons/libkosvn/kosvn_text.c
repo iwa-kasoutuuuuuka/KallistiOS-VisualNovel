@@ -14,8 +14,9 @@
 
 #include "kosvn_internal.h"
 
-#define TEXT_TEX_W      512U
+#define TEXT_TEX_W      1024U
 #define TEXT_TEX_H      512U
+#define TEXT_CANVAS_W   640U
 #define TEXT_CANVAS_H   480U
 #define TEXT_LINE_STEP  28U
 
@@ -159,7 +160,7 @@ static void rebuild_canvas(void) {
     memset(txt_st.canvas, 0, (size_t)TEXT_TEX_W * TEXT_CANVAS_H * sizeof(uint16_t));
 
     if(txt_st.backlog_visible) {
-        draw_sjis_block(8U, 26U, 496U, 58U, 0xF6EFU,
+        draw_sjis_block(32U, 26U, 576U, 56U, 0xF6EFU,
                         "=== BACKLOG (DPAD:Scroll  A/B/Y:Close) ===", 96U);
 
         int max_show = 7;
@@ -175,10 +176,10 @@ static void rebuild_canvas(void) {
             int idx = (txt_st.backlog_head - 1 - offset_from_newest + VN_BACKLOG_SIZE * 2) % VN_BACKLOG_SIZE;
             const vn_backlog_entry_t *e = &txt_st.backlog[idx];
             if(e->speaker[0] != '\0') {
-                draw_sjis_block(12U, cy, 488U, cy + 28U, 0xFFD6U, e->speaker, 64U);
-                draw_sjis_block(150U, cy, 350U, cy + 54U, 0xFFFFU, e->text, 128U);
+                draw_sjis_block(32U, cy, 132U, cy + 28U, 0xFFD6U, e->speaker, 64U);
+                draw_sjis_block(172U, cy, 436U, cy + 54U, 0xFFFFU, e->text, 128U);
             } else {
-                draw_sjis_block(12U, cy, 488U, cy + 54U, 0xFEEFU, e->text, 128U);
+                draw_sjis_block(32U, cy, 576U, cy + 54U, 0xFEEFU, e->text, 128U);
             }
             cy += 56U;
             if(cy >= 445U)
@@ -186,11 +187,11 @@ static void rebuild_canvas(void) {
         }
     } else if(txt_st.window_visible) {
         if(txt_st.speaker[0] != '\0') {
-            draw_sjis_block(8U, 290U, 240U, 318U, 0xFFD6U, txt_st.speaker, 64U);
+            draw_sjis_block(36U, 289U, 216U, 316U, 0xFFD6U, txt_st.speaker, 64U);
         }
 
         if(txt_st.dialogue[0] != '\0') {
-            draw_sjis_block(8U, 334U, 496U, 444U, 0xFFFFU, txt_st.dialogue, txt_st.visible_chars);
+            draw_sjis_block(24U, 330U, 592U, 446U, 0xFFFFU, txt_st.dialogue, txt_st.visible_chars);
         }
 
         if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
@@ -198,15 +199,15 @@ static void rebuild_canvas(void) {
             for(int i = 0; i < txt_st.choice_count; i++) {
                 uint16_t col = (i == txt_st.choice_selected) ? 0xFFD4U : 0xFEEFU;
                 if(i == txt_st.choice_selected)
-                    draw_sjis_block(26U, cy + 8U, 30U, cy + 38U, 0xFFD4U, ">", 4U);
-                draw_sjis_block(52U, cy + 8U, 430U, cy + 38U, col, txt_st.choices[i].label, 128U);
+                    draw_sjis_block(74U, cy + 6U, 24U, cy + 34U, 0xFFD4U, ">", 4U);
+                draw_sjis_block(96U, cy + 6U, 472U, cy + 34U, col, txt_st.choices[i].label, 128U);
                 cy += 44U;
             }
         }
     }
 
     if(txt_st.status_line[0] != '\0') {
-        draw_sjis_block(8U, 450U, 496U, 478U, 0xF8EEU, txt_st.status_line, 96U);
+        draw_sjis_block(24U, 452U, 592U, 478U, 0xF8EEU, txt_st.status_line, 96U);
     }
 
     pvr_txr_load(txt_st.canvas, txt_st.tex.vram_ptr, (size_t)TEXT_TEX_W * TEXT_TEX_H * sizeof(uint16_t));
@@ -359,8 +360,15 @@ const char *vn_text_get_choice_target(int index) {
 void vn_backlog_push(const char *speaker_sjis, const char *text_sjis) {
     if(!text_sjis || text_sjis[0] == '\0')
         return;
+    const char *spk = speaker_sjis ? speaker_sjis : "";
+    if(txt_st.backlog_count > 0) {
+        int latest = (txt_st.backlog_head - 1 + VN_BACKLOG_SIZE) % VN_BACKLOG_SIZE;
+        if(strcmp(txt_st.backlog[latest].speaker, spk) == 0 &&
+           strcmp(txt_st.backlog[latest].text, text_sjis) == 0)
+            return;
+    }
     vn_backlog_entry_t *e = &txt_st.backlog[txt_st.backlog_head];
-    vn_copy_str(e->speaker, sizeof(e->speaker), speaker_sjis);
+    vn_copy_str(e->speaker, sizeof(e->speaker), spk);
     vn_copy_str(e->text, sizeof(e->text), text_sjis);
     txt_st.backlog_head = (txt_st.backlog_head + 1) % VN_BACKLOG_SIZE;
     if(txt_st.backlog_count < VN_BACKLOG_SIZE)
@@ -407,16 +415,16 @@ void vn_text_render_to_pvr(void) {
     float sy = vn_gfx_get_shake_y();
 
     if(txt_st.backlog_visible) {
-        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 40.0f, 20.0f, 560.0f, 440.0f, 20.0f, 0xDF0B1222U);
+        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 20.0f, 20.0f, 600.0f, 426.0f, 20.0f, 0xDF0B1222U);
     } else if(txt_st.window_visible) {
         /* Speaker badge */
         if(txt_st.speaker[0] != '\0') {
-            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 58.0f + sx, 286.0f + sy, 264.0f, 34.0f, 20.0f, 0xE03A70B8U);
-            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 60.0f + sx, 288.0f + sy, 260.0f, 30.0f, 20.5f, 0xD8152340U);
+            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 24.0f + sx, 284.0f + sy, 240.0f, 34.0f, 20.0f, 0xE03A70B8U);
+            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 26.0f + sx, 286.0f + sy, 236.0f, 30.0f, 20.5f, 0xD8152340U);
         }
         /* Main dialogue box */
-        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 44.0f + sx, 322.0f + sy, 552.0f, 128.0f, 20.0f, 0xDF68B0F8U);
-        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 47.0f + sx, 325.0f + sy, 546.0f, 122.0f, 20.5f, 0xCE0D1528U);
+        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 12.0f + sx, 320.0f + sy, 616.0f, 130.0f, 20.0f, 0xDF68B0F8U);
+        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 15.0f + sx, 323.0f + sy, 610.0f, 124.0f, 20.5f, 0xCE0D1528U);
 
         /* Choice cards */
         if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
@@ -424,15 +432,17 @@ void vn_text_render_to_pvr(void) {
             for(int i = 0; i < txt_st.choice_count; i++) {
                 uint32_t border = (i == txt_st.choice_selected) ? 0xFFF2C94CU : 0xD05888C8U;
                 uint32_t fill   = (i == txt_st.choice_selected) ? 0xE0253A68U : 0xCC121E38U;
-                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 82.0f, cy, 476.0f, 36.0f, 21.0f, border);
-                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 84.0f, cy + 2.0f, 472.0f, 32.0f, 21.5f, fill);
+                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 60.0f, cy, 520.0f, 36.0f, 21.0f, border);
+                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 62.0f, cy + 2.0f, 516.0f, 32.0f, 21.5f, fill);
                 cy += 44.0f;
             }
         }
     }
 
     vn_gfx_draw_txr_quad(PVR_LIST_TR_POLY, &txt_st.tex,
-                         64.0f + sx, 0.0f + sy, 512.0f, (float)TEXT_CANVAS_H, 25.0f,
-                         0.0f, 0.0f, 1.0f, (float)TEXT_CANVAS_H / (float)TEXT_TEX_H,
+                         0.0f + sx, 0.0f + sy, (float)TEXT_CANVAS_W, (float)TEXT_CANVAS_H, 25.0f,
+                         0.0f, 0.0f,
+                         (float)TEXT_CANVAS_W / (float)TEXT_TEX_W,
+                         (float)TEXT_CANVAS_H / (float)TEXT_TEX_H,
                          0xFFFFFFFFU);
 }

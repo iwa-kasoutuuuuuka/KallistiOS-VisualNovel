@@ -17,7 +17,13 @@
 
 #include "kosvn_internal.h"
 
-#define BGM_CHUNK_BYTES 8192
+#define BGM_CHUNK_BYTES  8192
+#define VN_SFX_CACHE_MAX 8
+
+typedef struct vn_sfx_entry {
+    char     name[64];
+    sfxhnd_t hnd;
+} vn_sfx_entry_t;
 
 static struct {
     bool              initialized;
@@ -49,6 +55,8 @@ static struct {
     uint16_t         *bgm_chunk;
     char              bgm_name[64];
     FILE             *bgm_wav_fp;
+    vn_sfx_entry_t    sfx_cache[VN_SFX_CACHE_MAX];
+    int               sfx_cache_cnt;
 } core_st;
 
 /* 32-entry signed sine wave table scaled to [-12000, +12000] */
@@ -179,6 +187,13 @@ int vn_audio_play_se(const char *path_or_spec) {
     if(!core_st.audio_ready || !path_or_spec || path_or_spec[0] == '\0')
         return 0;
 
+    for(int i = 0; i < core_st.sfx_cache_cnt; i++) {
+        if(strcmp(core_st.sfx_cache[i].name, path_or_spec) == 0) {
+            snd_sfx_play(core_st.sfx_cache[i].hnd, 200, 128);
+            return 0;
+        }
+    }
+
     sfxhnd_t hnd = SFXHND_INVALID;
     if(strncmp(path_or_spec, "proc:", 5) == 0) {
         uint32_t samples = 3500U;
@@ -205,6 +220,17 @@ int vn_audio_play_se(const char *path_or_spec) {
 
     if(hnd == SFXHND_INVALID)
         return -1;
+
+    if(core_st.sfx_cache_cnt >= VN_SFX_CACHE_MAX) {
+        snd_sfx_unload(core_st.sfx_cache[0].hnd);
+        for(int i = 1; i < VN_SFX_CACHE_MAX; i++)
+            core_st.sfx_cache[i - 1] = core_st.sfx_cache[i];
+        core_st.sfx_cache_cnt = VN_SFX_CACHE_MAX - 1;
+    }
+
+    vn_sfx_entry_t *ent = &core_st.sfx_cache[core_st.sfx_cache_cnt++];
+    vn_copy_str(ent->name, sizeof(ent->name), path_or_spec);
+    ent->hnd = hnd;
 
     snd_sfx_play(hnd, 200, 128);
     return 0;
@@ -267,6 +293,7 @@ void vn_shutdown(void) {
     if(core_st.audio_ready) {
         snd_sfx_unload_all();
         snd_stream_shutdown();
+        core_st.sfx_cache_cnt = 0;
         core_st.audio_ready = false;
     }
 
@@ -289,6 +316,7 @@ static void handle_quick_save(void) {
         vn_copy_str(st.char_names[i], sizeof(st.char_names[i]),
                     vn_gfx_get_char_name((vn_sprite_pos_t)i));
     }
+    vn_copy_str(st.speaker_name, sizeof(st.speaker_name), vn_text_get_speaker());
     vn_copy_str(st.bgm_name, sizeof(st.bgm_name), vn_audio_get_bgm_name());
     for(int i = 0; i < VN_MAX_FLAGS; i++) {
         st.flags[i] = vn_script_get_flag(i);
@@ -319,10 +347,10 @@ static void handle_quick_load(void) {
     vn_bg_set(st.bg_name);
     for(int i = 0; i < VN_MAX_SPRITES; i++)
         vn_char_set((vn_sprite_pos_t)i, st.char_names[i]);
+    vn_text_set_speaker(st.speaker_name);
     vn_audio_play_bgm(st.bgm_name);
 
-    uint32_t target_line = (st.script_line > 0U) ? (st.script_line - 1U) : 0U;
-    vn_script_jump_line(target_line);
+    vn_script_jump_line(st.script_line);
     vn_script_advance();
 
     vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[LOADED VMU0]");
@@ -408,7 +436,6 @@ int vn_step_frame(void) {
                 int sel = vn_text_get_selected_choice();
                 const char *tgt = vn_text_get_choice_target(sel);
                 vn_audio_play_se("proc:chime");
-                vn_backlog_push(vn_text_get_speaker(), vn_text_get_dialogue());
                 vn_text_clear_choices();
                 if(tgt)
                     vn_script_jump_label(tgt);
@@ -449,7 +476,7 @@ int vn_step_frame(void) {
     if(core_st.notice_msg[0] != '\0') {
         snprintf(status, sizeof(status), "%s  %s", mode_tag, core_st.notice_msg);
     } else {
-        snprintf(status, sizeof(status), "%s  A:Next X:Auto Y:Log R:Skip START:Exit", mode_tag);
+        snprintf(status, sizeof(status), "%s | A:Next B:Hide X:Auto Y:Log R:Skip", mode_tag);
     }
     vn_text_set_status_overlay(status);
 
