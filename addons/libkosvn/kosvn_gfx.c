@@ -13,6 +13,32 @@
 
 #include "kosvn_internal.h"
 
+#define VN_TEX_CACHE_MAX 16
+#define VN_HDR_CACHE_MAX 8
+
+typedef enum vn_tex_kind {
+    VN_TEX_KIND_BG    = 0,
+    VN_TEX_KIND_CHAR  = 1,
+    VN_TEX_KIND_CUTIN = 2
+} vn_tex_kind_t;
+
+typedef struct vn_tex_cache_entry {
+    bool     in_use;
+    uint8_t  kind;
+    char     spec[64];
+    vn_tex_t tex;
+    uint32_t last_used;
+} vn_tex_cache_entry_t;
+
+typedef struct vn_hdr_cache_entry {
+    pvr_ptr_t      vram_ptr;
+    pvr_list_t     list;
+    uint32_t       fmt;
+    uint16_t       width;
+    uint16_t       height;
+    pvr_poly_hdr_t hdr __attribute__((aligned(32)));
+} vn_hdr_cache_entry_t;
+
 typedef struct vn_sprite_slot {
     bool     active;
     vn_tex_t tex;
@@ -22,29 +48,36 @@ typedef struct vn_sprite_slot {
 } vn_sprite_slot_t;
 
 static struct {
-    bool             initialized;
-    bool             has_bg;
-    vn_tex_t         bg_tex;
-    char             bg_name[64];
-    vn_sprite_slot_t sprites[VN_MAX_SPRITES];
-    bool             has_cutin;
-    vn_tex_t         cutin_tex;
-    char             cutin_name[64];
+    bool                 initialized;
+    bool                 has_bg;
+    vn_tex_t             bg_tex;
+    char                 bg_name[64];
+    vn_sprite_slot_t     sprites[VN_MAX_SPRITES];
+    bool                 has_cutin;
+    vn_tex_t             cutin_tex;
+    char                 cutin_name[64];
+
+    /* VRAM texture cache & precompiled PVR2 polygon headers */
+    vn_tex_cache_entry_t tex_cache[VN_TEX_CACHE_MAX];
+    uint32_t             cache_tick;
+    pvr_poly_hdr_t       col_hdr_op __attribute__((aligned(32)));
+    pvr_poly_hdr_t       col_hdr_tr __attribute__((aligned(32)));
+    vn_hdr_cache_entry_t hdr_cache[VN_HDR_CACHE_MAX];
 
     /* Fade overlay */
-    uint32_t         fade_rgb;
-    float            fade_alpha;
-    float            fade_start;
-    float            fade_target;
-    uint32_t         fade_elapsed_ms;
-    uint32_t         fade_duration_ms;
+    uint32_t             fade_rgb;
+    float                fade_alpha;
+    float                fade_start;
+    float                fade_target;
+    uint32_t             fade_elapsed_ms;
+    uint32_t             fade_duration_ms;
 
     /* Screen shake */
-    float            shake_amp;
-    uint32_t         shake_elapsed_ms;
-    uint32_t         shake_duration_ms;
-    float            shake_x;
-    float            shake_y;
+    float                shake_amp;
+    uint32_t             shake_elapsed_ms;
+    uint32_t             shake_duration_ms;
+    float                shake_x;
+    float                shake_y;
 } gfx_st;
 
 static inline uint16_t pack_rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -69,6 +102,16 @@ static bool is_pow2(uint16_t v) {
     return v >= 8 && (v & (v - 1)) == 0;
 }
 
+static void invalidate_hdr_cache_for(pvr_ptr_t ptr) {
+    if(!ptr)
+        return;
+    for(int i = 0; i < VN_HDR_CACHE_MAX; i++) {
+        if(gfx_st.hdr_cache[i].vram_ptr == ptr) {
+            gfx_st.hdr_cache[i].vram_ptr = NULL;
+        }
+    }
+}
+
 int vn_gfx_init(void) {
     if(gfx_st.initialized)
         return 0;
@@ -79,6 +122,16 @@ int vn_gfx_init(void) {
         return -1;
     }
     pvr_set_bg_color(0.0f, 0.0f, 0.0f);
+
+    pvr_poly_cxt_t cxt;
+    pvr_poly_cxt_col(&cxt, PVR_LIST_OP_POLY);
+    cxt.gen.culling = PVR_CULLING_NONE;
+    pvr_poly_compile(&gfx_st.col_hdr_op, &cxt);
+
+    pvr_poly_cxt_col(&cxt, PVR_LIST_TR_POLY);
+    cxt.gen.culling = PVR_CULLING_NONE;
+    pvr_poly_compile(&gfx_st.col_hdr_tr, &cxt);
+
     gfx_st.initialized = true;
     return 0;
 }
@@ -87,15 +140,24 @@ void vn_gfx_shutdown(void) {
     if(!gfx_st.initialized)
         return;
 
-    vn_tex_free(&gfx_st.bg_tex);
+    for(int i = 0; i < VN_TEX_CACHE_MAX; i++) {
+        if(gfx_st.tex_cache[i].in_use) {
+            vn_tex_free(&gfx_st.tex_cache[i].tex);
+            gfx_st.tex_cache[i].in_use = false;
+        }
+    }
+    memset(&gfx_st.bg_tex, 0, sizeof(gfx_st.bg_tex));
     gfx_st.has_bg = false;
-    vn_tex_free(&gfx_st.cutin_tex);
+    gfx_st.bg_name[0] = '\0';
+    memset(&gfx_st.cutin_tex, 0, sizeof(gfx_st.cutin_tex));
     gfx_st.has_cutin = false;
     gfx_st.cutin_name[0] = '\0';
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
-        vn_tex_free(&gfx_st.sprites[i].tex);
+        memset(&gfx_st.sprites[i].tex, 0, sizeof(gfx_st.sprites[i].tex));
         gfx_st.sprites[i].active = false;
+        gfx_st.sprites[i].name[0] = '\0';
     }
+    memset(gfx_st.hdr_cache, 0, sizeof(gfx_st.hdr_cache));
     pvr_shutdown();
     gfx_st.initialized = false;
 }
@@ -104,6 +166,7 @@ void vn_tex_free(vn_tex_t *tex) {
     if(!tex)
         return;
     if(tex->vram_ptr) {
+        invalidate_hdr_cache_for(tex->vram_ptr);
         pvr_mem_free(tex->vram_ptr);
         tex->vram_ptr = NULL;
     }
@@ -405,66 +468,6 @@ int vn_tex_create_procedural_portrait(vn_tex_t *tex, uint16_t w, uint16_t h, int
     return 0;
 }
 
-int vn_bg_set(const char *asset_spec) {
-    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
-        vn_tex_free(&gfx_st.bg_tex);
-        gfx_st.has_bg = false;
-        gfx_st.bg_name[0] = '\0';
-        return 0;
-    }
-
-    int rc = -1;
-    if(strncmp(asset_spec, "proc:", 5) == 0) {
-        const char *tag = asset_spec + 5;
-        int style = 0;
-        if(strcmp(tag, "shrine_sunset") == 0) style = 1;
-        else if(strcmp(tag, "cyber_lab") == 0) style = 2;
-        rc = vn_tex_create_procedural_bg(&gfx_st.bg_tex, 256, 256, style);
-    } else {
-        rc = vn_tex_load_raw16(&gfx_st.bg_tex, asset_spec, 512, 512,
-                               PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED);
-    }
-
-    if(rc == 0) {
-        gfx_st.has_bg = true;
-        vn_copy_str(gfx_st.bg_name, sizeof(gfx_st.bg_name), asset_spec);
-    }
-    return rc;
-}
-
-int vn_char_set(vn_sprite_pos_t pos, const char *asset_spec) {
-    if((int)pos < 0 || (int)pos >= VN_MAX_SPRITES)
-        return -1;
-
-    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
-        vn_char_clear(pos);
-        return 0;
-    }
-
-    vn_sprite_slot_t *sp = &gfx_st.sprites[pos];
-    int rc = -1;
-    if(strncmp(asset_spec, "proc:", 5) == 0) {
-        const char *tag = asset_spec + 5;
-        int char_id = 0;
-        int expr_id = 0;
-        if(strstr(tag, "rei") != NULL) char_id = 1;
-        if(strstr(tag, "smile") != NULL) expr_id = 1;
-        else if(strstr(tag, "surprised") != NULL) expr_id = 2;
-        rc = vn_tex_create_procedural_portrait(&sp->tex, 128, 256, char_id, expr_id);
-    } else {
-        rc = vn_tex_load_raw16(&sp->tex, asset_spec, 128, 256,
-                               PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED);
-    }
-
-    if(rc == 0) {
-        sp->active = true;
-        sp->alpha = 0.0f;
-        sp->alpha_target = 1.0f;
-        vn_copy_str(sp->name, sizeof(sp->name), asset_spec);
-    }
-    return rc;
-}
-
 static int create_procedural_cutin(vn_tex_t *tex, const char *tag) {
     const uint16_t w = 128U;
     const uint16_t h = 128U;
@@ -549,29 +552,196 @@ static int create_procedural_cutin(vn_tex_t *tex, const char *tag) {
     return 0;
 }
 
+static bool is_vram_ptr_active(pvr_ptr_t ptr) {
+    if(!ptr)
+        return false;
+    if(gfx_st.has_bg && gfx_st.bg_tex.vram_ptr == ptr)
+        return true;
+    for(int i = 0; i < VN_MAX_SPRITES; i++) {
+        if(gfx_st.sprites[i].active && gfx_st.sprites[i].tex.vram_ptr == ptr)
+            return true;
+    }
+    if(gfx_st.has_cutin && gfx_st.cutin_tex.vram_ptr == ptr)
+        return true;
+    return false;
+}
+
+static bool evict_lru_cached_tex(void) {
+    int best_idx = -1;
+    uint32_t best_tick = 0U;
+
+    for(int i = 0; i < VN_TEX_CACHE_MAX; i++) {
+        vn_tex_cache_entry_t *e = &gfx_st.tex_cache[i];
+        if(!e->in_use || is_vram_ptr_active(e->tex.vram_ptr))
+            continue;
+        if(best_idx < 0 || e->last_used < best_tick) {
+            best_idx = i;
+            best_tick = e->last_used;
+        }
+    }
+
+    if(best_idx < 0)
+        return false;
+
+    vn_tex_free(&gfx_st.tex_cache[best_idx].tex);
+    gfx_st.tex_cache[best_idx].in_use = false;
+    gfx_st.tex_cache[best_idx].spec[0] = '\0';
+    return true;
+}
+
+static int generate_or_load_tex(vn_tex_kind_t kind, const char *asset_spec, vn_tex_t *out_tex) {
+    memset(out_tex, 0, sizeof(*out_tex));
+    if(kind == VN_TEX_KIND_BG) {
+        if(strncmp(asset_spec, "proc:", 5) == 0) {
+            const char *tag = asset_spec + 5;
+            int style = 0;
+            if(strcmp(tag, "shrine_sunset") == 0) style = 1;
+            else if(strcmp(tag, "cyber_lab") == 0) style = 2;
+            return vn_tex_create_procedural_bg(out_tex, 256, 256, style);
+        }
+        return vn_tex_load_raw16(out_tex, asset_spec, 512, 512,
+                                 PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED);
+    }
+
+    if(kind == VN_TEX_KIND_CHAR) {
+        if(strncmp(asset_spec, "proc:", 5) == 0) {
+            const char *tag = asset_spec + 5;
+            int char_id = 0;
+            int expr_id = 0;
+            if(strstr(tag, "rei") != NULL) char_id = 1;
+            if(strstr(tag, "smile") != NULL) expr_id = 1;
+            else if(strstr(tag, "surprised") != NULL) expr_id = 2;
+            return vn_tex_create_procedural_portrait(out_tex, 128, 256, char_id, expr_id);
+        }
+        return vn_tex_load_raw16(out_tex, asset_spec, 128, 256,
+                                 PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED);
+    }
+
+    if(strncmp(asset_spec, "proc:", 5) == 0) {
+        return create_procedural_cutin(out_tex, asset_spec + 5);
+    }
+    return vn_tex_load_raw16(out_tex, asset_spec, 128, 128,
+                             PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED);
+}
+
+static int acquire_cached_tex(vn_tex_kind_t kind, const char *asset_spec, vn_tex_t *out_tex) {
+    if(!asset_spec || asset_spec[0] == '\0' || !out_tex)
+        return -1;
+
+    for(int i = 0; i < VN_TEX_CACHE_MAX; i++) {
+        vn_tex_cache_entry_t *e = &gfx_st.tex_cache[i];
+        if(e->in_use && e->kind == (uint8_t)kind && strcmp(e->spec, asset_spec) == 0) {
+            e->last_used = ++gfx_st.cache_tick;
+            *out_tex = e->tex;
+            return 0;
+        }
+    }
+
+    int free_idx = -1;
+    for(int i = 0; i < VN_TEX_CACHE_MAX; i++) {
+        if(!gfx_st.tex_cache[i].in_use) {
+            free_idx = i;
+            break;
+        }
+    }
+    if(free_idx < 0) {
+        if(!evict_lru_cached_tex())
+            return -1;
+        for(int i = 0; i < VN_TEX_CACHE_MAX; i++) {
+            if(!gfx_st.tex_cache[i].in_use) {
+                free_idx = i;
+                break;
+            }
+        }
+        if(free_idx < 0)
+            return -1;
+    }
+
+    vn_tex_t new_tex;
+    int rc = generate_or_load_tex(kind, asset_spec, &new_tex);
+    while(rc < 0 && evict_lru_cached_tex()) {
+        rc = generate_or_load_tex(kind, asset_spec, &new_tex);
+    }
+    if(rc < 0)
+        return -1;
+
+    vn_tex_cache_entry_t *dst = &gfx_st.tex_cache[free_idx];
+    dst->in_use = true;
+    dst->kind = (uint8_t)kind;
+    vn_copy_str(dst->spec, sizeof(dst->spec), asset_spec);
+    dst->tex = new_tex;
+    dst->last_used = ++gfx_st.cache_tick;
+    *out_tex = new_tex;
+    return 0;
+}
+
+int vn_bg_set(const char *asset_spec) {
+    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
+        memset(&gfx_st.bg_tex, 0, sizeof(gfx_st.bg_tex));
+        gfx_st.has_bg = false;
+        gfx_st.bg_name[0] = '\0';
+        return 0;
+    }
+
+    if(gfx_st.has_bg && strcmp(gfx_st.bg_name, asset_spec) == 0)
+        return 0;
+
+    vn_tex_t next_tex;
+    if(acquire_cached_tex(VN_TEX_KIND_BG, asset_spec, &next_tex) < 0)
+        return -1;
+
+    gfx_st.bg_tex = next_tex;
+    gfx_st.has_bg = true;
+    vn_copy_str(gfx_st.bg_name, sizeof(gfx_st.bg_name), asset_spec);
+    return 0;
+}
+
+int vn_char_set(vn_sprite_pos_t pos, const char *asset_spec) {
+    if((int)pos < 0 || (int)pos >= VN_MAX_SPRITES)
+        return -1;
+
+    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
+        vn_char_clear(pos);
+        return 0;
+    }
+
+    vn_sprite_slot_t *sp = &gfx_st.sprites[pos];
+    if(sp->active && strcmp(sp->name, asset_spec) == 0)
+        return 0;
+
+    vn_tex_t next_tex;
+    if(acquire_cached_tex(VN_TEX_KIND_CHAR, asset_spec, &next_tex) < 0)
+        return -1;
+
+    sp->tex = next_tex;
+    sp->active = true;
+    sp->alpha = 0.0f;
+    sp->alpha_target = 1.0f;
+    vn_copy_str(sp->name, sizeof(sp->name), asset_spec);
+    return 0;
+}
+
 int vn_cutin_set(const char *asset_spec) {
     if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
         vn_cutin_clear();
         return 0;
     }
 
-    int rc = -1;
-    if(strncmp(asset_spec, "proc:", 5) == 0) {
-        rc = create_procedural_cutin(&gfx_st.cutin_tex, asset_spec + 5);
-    } else {
-        rc = vn_tex_load_raw16(&gfx_st.cutin_tex, asset_spec, 128, 128,
-                               PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED);
-    }
+    if(gfx_st.has_cutin && strcmp(gfx_st.cutin_name, asset_spec) == 0)
+        return 0;
 
-    if(rc == 0) {
-        gfx_st.has_cutin = true;
-        vn_copy_str(gfx_st.cutin_name, sizeof(gfx_st.cutin_name), asset_spec);
-    }
-    return rc;
+    vn_tex_t next_tex;
+    if(acquire_cached_tex(VN_TEX_KIND_CUTIN, asset_spec, &next_tex) < 0)
+        return -1;
+
+    gfx_st.cutin_tex = next_tex;
+    gfx_st.has_cutin = true;
+    vn_copy_str(gfx_st.cutin_name, sizeof(gfx_st.cutin_name), asset_spec);
+    return 0;
 }
 
 void vn_cutin_clear(void) {
-    vn_tex_free(&gfx_st.cutin_tex);
+    memset(&gfx_st.cutin_tex, 0, sizeof(gfx_st.cutin_tex));
     gfx_st.has_cutin = false;
     gfx_st.cutin_name[0] = '\0';
 }
@@ -583,7 +753,7 @@ const char *vn_cutin_get_name(void) {
 void vn_char_clear(vn_sprite_pos_t pos) {
     if((int)pos < 0 || (int)pos >= VN_MAX_SPRITES)
         return;
-    vn_tex_free(&gfx_st.sprites[pos].tex);
+    memset(&gfx_st.sprites[pos].tex, 0, sizeof(gfx_st.sprites[pos].tex));
     gfx_st.sprites[pos].active = false;
     gfx_st.sprites[pos].name[0] = '\0';
     gfx_st.sprites[pos].alpha = 0.0f;
@@ -670,14 +840,20 @@ const char *vn_gfx_get_char_name(vn_sprite_pos_t pos) {
 }
 
 void vn_gfx_draw_col_quad(pvr_list_t list, float x, float y, float w, float h, float z, uint32_t argb) {
-    pvr_poly_cxt_t cxt;
-    pvr_poly_hdr_t hdr __attribute__((aligned(32)));
     pvr_vertex_t vert;
 
-    pvr_poly_cxt_col(&cxt, list);
-    cxt.gen.culling = PVR_CULLING_NONE;
-    pvr_poly_compile(&hdr, &cxt);
-    pvr_prim(&hdr, sizeof(hdr));
+    if(list == PVR_LIST_OP_POLY) {
+        pvr_prim(&gfx_st.col_hdr_op, sizeof(gfx_st.col_hdr_op));
+    } else if(list == PVR_LIST_TR_POLY) {
+        pvr_prim(&gfx_st.col_hdr_tr, sizeof(gfx_st.col_hdr_tr));
+    } else {
+        pvr_poly_cxt_t cxt;
+        pvr_poly_hdr_t hdr __attribute__((aligned(32)));
+        pvr_poly_cxt_col(&cxt, list);
+        cxt.gen.culling = PVR_CULLING_NONE;
+        pvr_poly_compile(&hdr, &cxt);
+        pvr_prim(&hdr, sizeof(hdr));
+    }
 
     vert.flags = PVR_CMD_VERTEX;
     vert.x = x; vert.y = y; vert.z = z;
@@ -701,14 +877,22 @@ void vn_gfx_draw_txr_quad(pvr_list_t list, const vn_tex_t *tex, float x, float y
     if(!tex || !tex->vram_ptr)
         return;
 
-    pvr_poly_cxt_t cxt;
-    pvr_poly_hdr_t hdr __attribute__((aligned(32)));
-    pvr_vertex_t vert;
+    vn_hdr_cache_entry_t *he = &gfx_st.hdr_cache[((uintptr_t)tex->vram_ptr >> 5) & (VN_HDR_CACHE_MAX - 1)];
+    if(he->vram_ptr != tex->vram_ptr || he->list != list ||
+       he->fmt != tex->fmt || he->width != tex->width || he->height != tex->height) {
+        pvr_poly_cxt_t cxt;
+        pvr_poly_cxt_txr(&cxt, list, tex->fmt, tex->width, tex->height, tex->vram_ptr, PVR_FILTER_BILINEAR);
+        cxt.gen.culling = PVR_CULLING_NONE;
+        pvr_poly_compile(&he->hdr, &cxt);
+        he->vram_ptr = tex->vram_ptr;
+        he->list = list;
+        he->fmt = tex->fmt;
+        he->width = tex->width;
+        he->height = tex->height;
+    }
 
-    pvr_poly_cxt_txr(&cxt, list, tex->fmt, tex->width, tex->height, tex->vram_ptr, PVR_FILTER_BILINEAR);
-    cxt.gen.culling = PVR_CULLING_NONE;
-    pvr_poly_compile(&hdr, &cxt);
-    pvr_prim(&hdr, sizeof(hdr));
+    pvr_vertex_t vert;
+    pvr_prim(&he->hdr, sizeof(he->hdr));
 
     vert.flags = PVR_CMD_VERTEX;
     vert.x = x; vert.y = y; vert.z = z;

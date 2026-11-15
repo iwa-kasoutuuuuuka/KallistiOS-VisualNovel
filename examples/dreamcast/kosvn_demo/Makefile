@@ -3,7 +3,7 @@ OBJS = main.o romdisk.o
 CDI = kosvn_demo.cdi
 MKDCDISC = /h/DC/tools/mkdcdisc_bin/mkdcdisc_win/mkdcdisc64.exe
 KOS_ROMDISK_DIR = romdisk
-KOS_CFLAGS += -I$(KOS_BASE)/addons/include -Wall -Wextra
+KOS_CFLAGS += -I$(KOS_BASE)/addons/include -O3 -fomit-frame-pointer -ffast-math -Wall -Wextra
 
 all: rm-elf $(TARGET)
 

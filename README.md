@@ -38,7 +38,7 @@
 * **ドリームキャスト向けオリジナル／同人ノベルゲームのスクラッチ開発**
   スクリプトファイル（`/rd/scenario.txt`）を書くだけで、テキスト送り・選択肢分岐・立ち絵管理・画面演出・VMU セーブ（全サイト状態＋256フラグ一括保存）まで一式が即動作します。
 * **C言語による高速・省メモリな専用ゲーム基盤**
-  `kosvn_demo.elf` 構成でも静的フットプリントは約 515 KB（16 MB RAM 中、約 15 MB 以上をリソースやバッファに活用可能）に収まります。
+  `kosvn_demo.elf` 構成でも静的フットプリントは約 515 KB（16 MB RAM 中、約 15 MB 以上をリソースやバッファに活用可能）に収まります。さらにタイプライター描画の差分行（Dirty Row）部分 VRAM 転送・PVR VRAM LRU テクスチャキャッシュによる 0ms サイトザッピング・PowerVR2 ポリゴンヘッダ事前コンパイル・FNV-1a ラベルハッシュ検索・SH-4 `-O3` 最適化により、テキスト送りと視点切替を高速化しています。
 * **LAN (`dcload-ip` + UDP) を活用した実機快適デバッグ**
   実機やエミュレータと PC を LAN 接続し、ゲームを動かしながら FPS・シナリオ現在行・空き RAM/VRAM を PC 側へリアルタイム送信して監視できます。
 * **プロシージャル素材による即座のプロトタイピング**
@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
 TARGET = my_vn_game.elf
 OBJS = main.o romdisk.o
 KOS_ROMDISK_DIR = romdisk
-KOS_CFLAGS += -I$(KOS_BASE)/addons/include -Wall -Wextra
+KOS_CFLAGS += -I$(KOS_BASE)/addons/include -O3 -fomit-frame-pointer -ffast-math -Wall -Wextra
 
 all: rm-elf $(TARGET)
 

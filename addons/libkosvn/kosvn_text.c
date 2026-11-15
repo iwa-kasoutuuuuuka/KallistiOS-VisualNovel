@@ -34,7 +34,9 @@ static struct {
     bool               initialized;
     uint16_t          *canvas;
     vn_tex_t           tex;
-    bool               dirty;
+    bool               full_dirty;
+    bool               dlg_dirty;
+    bool               status_dirty;
     bool               window_visible;
 
     char               speaker[64];
@@ -43,6 +45,11 @@ static struct {
     size_t             visible_chars;
     uint32_t           char_interval_ms;
     uint32_t           char_accum_ms;
+
+    uint32_t           dlg_x;
+    uint32_t           dlg_y;
+    size_t             dlg_byte_pos;
+    size_t             dlg_drawn_chars;
 
     vn_choice_item_t   choices[VN_MAX_CHOICES];
     int                choice_count;
@@ -154,71 +161,172 @@ static void draw_sjis_block(uint32_t x0, uint32_t y0, uint32_t max_w, uint32_t m
     }
 }
 
+static void upload_canvas_rows(uint32_t y0, uint32_t y1) {
+    if(!txt_st.canvas || !txt_st.tex.vram_ptr)
+        return;
+    if(y1 > TEXT_TEX_H)
+        y1 = TEXT_TEX_H;
+    if(y0 >= y1)
+        return;
+    size_t offset_words = (size_t)y0 * TEXT_TEX_W;
+    size_t bytes = (size_t)(y1 - y0) * TEXT_TEX_W * sizeof(uint16_t);
+    pvr_txr_load(txt_st.canvas + offset_words,
+                 (pvr_ptr_t)((uintptr_t)txt_st.tex.vram_ptr + offset_words * sizeof(uint16_t)),
+                 bytes);
+}
+
+static void draw_dialogue_incremental(size_t target_chars, uint32_t *y_min_out, uint32_t *y_max_out) {
+    const uint32_t x0 = 24U;
+    const uint32_t max_w = 592U;
+    const uint32_t max_y = 446U;
+    uint32_t y_min = TEXT_CANVAS_H;
+    uint32_t y_max = 0U;
+
+    while(txt_st.dialogue[txt_st.dlg_byte_pos] != '\0' && txt_st.dlg_drawn_chars < target_chars) {
+        char ch = txt_st.dialogue[txt_st.dlg_byte_pos];
+        if(ch == '\n') {
+            txt_st.dlg_x = x0;
+            txt_st.dlg_y += TEXT_LINE_STEP;
+            txt_st.dlg_byte_pos++;
+            txt_st.dlg_drawn_chars++;
+            continue;
+        }
+        if(ch == '\r') {
+            txt_st.dlg_byte_pos++;
+            continue;
+        }
+
+        uint32_t code = 0;
+        bool wide = false, kana = false;
+        size_t adv = sjis_next_char(txt_st.dialogue, txt_st.dlg_byte_pos, &code, &wide, &kana);
+        if(adv == 0)
+            break;
+
+        uint32_t glyph_w = wide ? BFONT_WIDE_WIDTH : BFONT_THIN_WIDTH;
+        if(txt_st.dlg_x - x0 + glyph_w > max_w) {
+            txt_st.dlg_x = x0;
+            txt_st.dlg_y += TEXT_LINE_STEP;
+        }
+
+        if(txt_st.dlg_y + BFONT_HEIGHT + 1U > max_y || txt_st.dlg_x + glyph_w + 1U > TEXT_TEX_W)
+            break;
+
+        if(txt_st.dlg_y < y_min)
+            y_min = txt_st.dlg_y;
+        if(txt_st.dlg_y + BFONT_HEIGHT + 2U > y_max)
+            y_max = txt_st.dlg_y + BFONT_HEIGHT + 2U;
+
+        uint16_t *sh_ptr = txt_st.canvas + (size_t)(txt_st.dlg_y + 1U) * TEXT_TEX_W + (txt_st.dlg_x + 1U);
+        bfont_draw_ex(sh_ptr, TEXT_TEX_W, 0xC000U, 0x0000U, 16, false, code, wide, kana);
+
+        uint16_t *fg_ptr = txt_st.canvas + (size_t)txt_st.dlg_y * TEXT_TEX_W + txt_st.dlg_x;
+        bfont_draw_ex(fg_ptr, TEXT_TEX_W, 0xFFFFU, 0x0000U, 16, false, code, wide, kana);
+
+        txt_st.dlg_x += glyph_w;
+        txt_st.dlg_byte_pos += adv;
+        txt_st.dlg_drawn_chars++;
+    }
+
+    if(y_min_out)
+        *y_min_out = y_min;
+    if(y_max_out)
+        *y_max_out = y_max;
+}
+
 static void rebuild_canvas(void) {
     if(!txt_st.canvas || !txt_st.tex.vram_ptr)
         return;
 
-    memset(txt_st.canvas, 0, (size_t)TEXT_TEX_W * TEXT_CANVAS_H * sizeof(uint16_t));
+    if(txt_st.full_dirty) {
+        memset(txt_st.canvas, 0, (size_t)TEXT_TEX_W * TEXT_CANVAS_H * sizeof(uint16_t));
 
-    if(txt_st.backlog_visible) {
-        draw_sjis_block(32U, 26U, 576U, 56U, 0xF6EFU,
-                        "=== BACKLOG (DPAD:Scroll  A/B/Y:Close) ===", 96U);
+        if(txt_st.backlog_visible) {
+            draw_sjis_block(32U, 26U, 576U, 56U, 0xF6EFU,
+                            "=== BACKLOG (DPAD:Scroll  A/B/Y:Close) ===", 96U);
 
-        int max_show = 7;
-        int start = txt_st.backlog_scroll;
-        if(start > txt_st.backlog_count - 1)
-            start = txt_st.backlog_count - 1;
-        if(start < 0)
-            start = 0;
+            int max_show = 7;
+            int start = txt_st.backlog_scroll;
+            if(start > txt_st.backlog_count - 1)
+                start = txt_st.backlog_count - 1;
+            if(start < 0)
+                start = 0;
 
-        uint32_t cy = 68U;
-        for(int row = 0; row < max_show && (start + row) < txt_st.backlog_count; row++) {
-            int offset_from_newest = start + row;
-            int idx = (txt_st.backlog_head - 1 - offset_from_newest + VN_BACKLOG_SIZE * 2) % VN_BACKLOG_SIZE;
-            const vn_backlog_entry_t *e = &txt_st.backlog[idx];
-            if(e->speaker[0] != '\0') {
-                draw_sjis_block(32U, cy, 132U, cy + 28U, 0xFFD6U, e->speaker, 64U);
-                draw_sjis_block(172U, cy, 436U, cy + 54U, 0xFFFFU, e->text, 128U);
-            } else {
-                draw_sjis_block(32U, cy, 576U, cy + 54U, 0xFEEFU, e->text, 128U);
+            uint32_t cy = 68U;
+            for(int row = 0; row < max_show && (start + row) < txt_st.backlog_count; row++) {
+                int offset_from_newest = start + row;
+                int idx = (txt_st.backlog_head - 1 - offset_from_newest + VN_BACKLOG_SIZE * 2) % VN_BACKLOG_SIZE;
+                const vn_backlog_entry_t *e = &txt_st.backlog[idx];
+                if(e->speaker[0] != '\0') {
+                    draw_sjis_block(32U, cy, 132U, cy + 28U, 0xFFD6U, e->speaker, 64U);
+                    draw_sjis_block(172U, cy, 436U, cy + 54U, 0xFFFFU, e->text, 128U);
+                } else {
+                    draw_sjis_block(32U, cy, 576U, cy + 54U, 0xFEEFU, e->text, 128U);
+                }
+                cy += 56U;
+                if(cy >= 445U)
+                    break;
             }
-            cy += 56U;
-            if(cy >= 445U)
-                break;
-        }
-    } else if(txt_st.window_visible) {
-        if(txt_st.site_badge[0] != '\0') {
-            draw_sjis_block(416U, 17U, 204U, 44U, 0xF8FFU, txt_st.site_badge, 48U);
-        }
+        } else if(txt_st.window_visible) {
+            if(txt_st.site_badge[0] != '\0') {
+                draw_sjis_block(416U, 17U, 204U, 44U, 0xF8FFU, txt_st.site_badge, 48U);
+            }
 
-        if(txt_st.speaker[0] != '\0') {
-            draw_sjis_block(36U, 289U, 216U, 316U, 0xFFD6U, txt_st.speaker, 64U);
-        }
+            if(txt_st.speaker[0] != '\0') {
+                draw_sjis_block(36U, 289U, 216U, 316U, 0xFFD6U, txt_st.speaker, 64U);
+            }
 
-        if(txt_st.dialogue[0] != '\0') {
-            draw_sjis_block(24U, 330U, 592U, 446U, 0xFFFFU, txt_st.dialogue, txt_st.visible_chars);
-        }
+            txt_st.dlg_x = 24U;
+            txt_st.dlg_y = 330U;
+            txt_st.dlg_byte_pos = 0U;
+            txt_st.dlg_drawn_chars = 0U;
+            if(txt_st.dialogue[0] != '\0') {
+                draw_dialogue_incremental(txt_st.visible_chars, NULL, NULL);
+            }
 
-        if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
-            uint32_t cy = (txt_st.choice_count > 4) ? 48U : 100U;
-            uint32_t cy_step = (txt_st.choice_count > 4) ? 38U : 44U;
-            uint32_t txt_off = (txt_st.choice_count > 4) ? 4U : 6U;
-            for(int i = 0; i < txt_st.choice_count; i++) {
-                uint16_t col = (i == txt_st.choice_selected) ? 0xFFD4U : 0xFEEFU;
-                if(i == txt_st.choice_selected)
-                    draw_sjis_block(74U, cy + txt_off, 24U, cy + txt_off + 26U, 0xFFD4U, ">", 4U);
-                draw_sjis_block(96U, cy + txt_off, 472U, cy + txt_off + 26U, col, txt_st.choices[i].label, 128U);
-                cy += cy_step;
+            if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
+                uint32_t cy = (txt_st.choice_count > 4) ? 48U : 100U;
+                uint32_t cy_step = (txt_st.choice_count > 4) ? 38U : 44U;
+                uint32_t txt_off = (txt_st.choice_count > 4) ? 4U : 6U;
+                for(int i = 0; i < txt_st.choice_count; i++) {
+                    uint16_t col = (i == txt_st.choice_selected) ? 0xFFD4U : 0xFEEFU;
+                    if(i == txt_st.choice_selected)
+                        draw_sjis_block(74U, cy + txt_off, 24U, cy + txt_off + 26U, 0xFFD4U, ">", 4U);
+                    draw_sjis_block(96U, cy + txt_off, 472U, cy + txt_off + 26U, col, txt_st.choices[i].label, 128U);
+                    cy += cy_step;
+                }
             }
         }
+
+        if(txt_st.status_line[0] != '\0') {
+            draw_sjis_block(24U, 452U, 592U, 478U, 0xF8EEU, txt_st.status_line, 96U);
+        }
+
+        upload_canvas_rows(0U, TEXT_CANVAS_H);
+        txt_st.full_dirty = false;
+        txt_st.dlg_dirty = false;
+        txt_st.status_dirty = false;
+        return;
     }
 
-    if(txt_st.status_line[0] != '\0') {
-        draw_sjis_block(24U, 452U, 592U, 478U, 0xF8EEU, txt_st.status_line, 96U);
+    if(txt_st.dlg_dirty) {
+        if(!txt_st.backlog_visible && txt_st.window_visible && txt_st.dialogue[0] != '\0') {
+            uint32_t y0 = TEXT_CANVAS_H;
+            uint32_t y1 = 0U;
+            draw_dialogue_incremental(txt_st.visible_chars, &y0, &y1);
+            upload_canvas_rows(y0, y1);
+        }
+        txt_st.dlg_dirty = false;
     }
 
-    pvr_txr_load(txt_st.canvas, txt_st.tex.vram_ptr, (size_t)TEXT_TEX_W * TEXT_TEX_H * sizeof(uint16_t));
-    txt_st.dirty = false;
+    if(txt_st.status_dirty) {
+        memset(txt_st.canvas + (size_t)450U * TEXT_TEX_W, 0,
+               (size_t)(TEXT_CANVAS_H - 450U) * TEXT_TEX_W * sizeof(uint16_t));
+        if(txt_st.status_line[0] != '\0') {
+            draw_sjis_block(24U, 452U, 592U, 478U, 0xF8EEU, txt_st.status_line, 96U);
+        }
+        upload_canvas_rows(450U, TEXT_CANVAS_H);
+        txt_st.status_dirty = false;
+    }
 }
 
 int vn_text_init(void) {
@@ -246,7 +354,7 @@ int vn_text_init(void) {
     txt_st.tex.fmt = PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED;
     txt_st.window_visible = true;
     txt_st.char_interval_ms = 28U;
-    txt_st.dirty = true;
+    txt_st.full_dirty = true;
     txt_st.initialized = true;
     return 0;
 }
@@ -270,7 +378,7 @@ void vn_text_set_speed(uint32_t ms_per_char) {
 void vn_text_set_window_visible(bool visible) {
     if(txt_st.window_visible != visible) {
         txt_st.window_visible = visible;
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
     }
 }
 
@@ -279,8 +387,11 @@ bool vn_text_is_window_visible(void) {
 }
 
 void vn_text_set_speaker(const char *speaker_sjis) {
-    vn_copy_str(txt_st.speaker, sizeof(txt_st.speaker), speaker_sjis);
-    txt_st.dirty = true;
+    const char *spk = speaker_sjis ? speaker_sjis : "";
+    if(strcmp(txt_st.speaker, spk) == 0)
+        return;
+    vn_copy_str(txt_st.speaker, sizeof(txt_st.speaker), spk);
+    txt_st.full_dirty = true;
 }
 
 void vn_text_set_dialogue(const char *text_sjis) {
@@ -288,7 +399,11 @@ void vn_text_set_dialogue(const char *text_sjis) {
     txt_st.total_chars = sjis_count_chars(txt_st.dialogue);
     txt_st.visible_chars = 0;
     txt_st.char_accum_ms = 0;
-    txt_st.dirty = true;
+    txt_st.dlg_x = 24U;
+    txt_st.dlg_y = 330U;
+    txt_st.dlg_byte_pos = 0U;
+    txt_st.dlg_drawn_chars = 0U;
+    txt_st.full_dirty = true;
 }
 
 const char *vn_text_get_speaker(void) { return txt_st.speaker; }
@@ -300,7 +415,9 @@ void vn_text_update(uint32_t dt_ms, bool fast_forward) {
 
     if(fast_forward) {
         txt_st.visible_chars = txt_st.total_chars;
-        txt_st.dirty = true;
+        txt_st.dlg_dirty = true;
+        if(txt_st.choice_count > 0)
+            txt_st.full_dirty = true;
         return;
     }
 
@@ -309,8 +426,10 @@ void vn_text_update(uint32_t dt_ms, bool fast_forward) {
           txt_st.visible_chars < txt_st.total_chars) {
         txt_st.char_accum_ms -= txt_st.char_interval_ms;
         txt_st.visible_chars++;
-        txt_st.dirty = true;
+        txt_st.dlg_dirty = true;
     }
+    if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars)
+        txt_st.full_dirty = true;
 }
 
 bool vn_text_is_complete(void) {
@@ -320,7 +439,9 @@ bool vn_text_is_complete(void) {
 void vn_text_reveal_all(void) {
     if(txt_st.visible_chars < txt_st.total_chars) {
         txt_st.visible_chars = txt_st.total_chars;
-        txt_st.dirty = true;
+        txt_st.dlg_dirty = true;
+        if(txt_st.choice_count > 0)
+            txt_st.full_dirty = true;
     }
 }
 
@@ -328,7 +449,7 @@ void vn_text_clear_choices(void) {
     if(txt_st.choice_count > 0) {
         txt_st.choice_count = 0;
         txt_st.choice_selected = 0;
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
     }
 }
 
@@ -339,7 +460,7 @@ int vn_text_add_choice(const char *label_sjis, const char *target_label) {
     vn_copy_str(c->label, sizeof(c->label), label_sjis);
     vn_copy_str(c->target, sizeof(c->target), target_label);
     txt_st.choice_count++;
-    txt_st.dirty = true;
+    txt_st.full_dirty = true;
     return 0;
 }
 
@@ -354,7 +475,7 @@ void vn_text_move_choice(int delta) {
         next += txt_st.choice_count;
     if(next != txt_st.choice_selected) {
         txt_st.choice_selected = next;
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
     }
 }
 
@@ -386,7 +507,7 @@ void vn_backlog_set_visible(bool visible) {
     if(txt_st.backlog_visible != visible) {
         txt_st.backlog_visible = visible;
         txt_st.backlog_scroll = 0;
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
     }
 }
 
@@ -399,7 +520,7 @@ void vn_backlog_scroll(int delta) {
     if(next > max_scroll) next = max_scroll;
     if(next != txt_st.backlog_scroll) {
         txt_st.backlog_scroll = next;
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
     }
 }
 
@@ -408,7 +529,7 @@ void vn_text_set_status_overlay(const char *status_line) {
     vn_copy_str(prev, sizeof(prev), txt_st.status_line);
     vn_copy_str(txt_st.status_line, sizeof(txt_st.status_line), status_line);
     if(strcmp(prev, txt_st.status_line) != 0)
-        txt_st.dirty = true;
+        txt_st.status_dirty = true;
 }
 
 void vn_text_set_site_badge(const char *badge_sjis) {
@@ -416,14 +537,14 @@ void vn_text_set_site_badge(const char *badge_sjis) {
     vn_copy_str(prev, sizeof(prev), txt_st.site_badge);
     vn_copy_str(txt_st.site_badge, sizeof(txt_st.site_badge), badge_sjis);
     if(strcmp(prev, txt_st.site_badge) != 0)
-        txt_st.dirty = true;
+        txt_st.full_dirty = true;
 }
 
 void vn_text_render_to_pvr(void) {
     if(!txt_st.initialized)
         return;
 
-    if(txt_st.dirty)
+    if(txt_st.full_dirty || txt_st.dlg_dirty || txt_st.status_dirty)
         rebuild_canvas();
 
     float sx = vn_gfx_get_shake_x();

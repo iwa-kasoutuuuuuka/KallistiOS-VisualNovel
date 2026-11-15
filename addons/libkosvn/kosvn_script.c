@@ -15,6 +15,7 @@
 typedef struct vn_label_entry {
     char     name[64];
     uint32_t line_idx;
+    uint32_t hash;
 } vn_label_entry_t;
 
 static struct {
@@ -37,14 +38,33 @@ static struct {
     char             site_start_labels[VN_MAX_SITES][64];
 } vm_st;
 
+static inline uint32_t fnv1a_hash(const char *s) {
+    uint32_t h = 2166136261U;
+    if(!s)
+        return h;
+    while(*s != '\0') {
+        h ^= (uint8_t)*s++;
+        h *= 16777619U;
+    }
+    return h;
+}
+
 static bool eval_cond(int idx, const char *op, int32_t rhs) {
+    if(!op || op[0] == '\0')
+        return false;
     int32_t lhs = vn_script_get_flag(idx);
-    if(strcmp(op, "==") == 0) return (lhs == rhs);
-    if(strcmp(op, "!=") == 0) return (lhs != rhs);
-    if(strcmp(op, ">=") == 0) return (lhs >= rhs);
-    if(strcmp(op, "<=") == 0) return (lhs <= rhs);
-    if(strcmp(op, ">") == 0)  return (lhs > rhs);
-    if(strcmp(op, "<") == 0)  return (lhs < rhs);
+    char c0 = op[0];
+    char c1 = op[1];
+    if(c0 == '=' && c1 == '=' && op[2] == '\0') return (lhs == rhs);
+    if(c0 == '!' && c1 == '=' && op[2] == '\0') return (lhs != rhs);
+    if(c0 == '>') {
+        if(c1 == '=' && op[2] == '\0') return (lhs >= rhs);
+        if(c1 == '\0') return (lhs > rhs);
+    }
+    if(c0 == '<') {
+        if(c1 == '=' && op[2] == '\0') return (lhs <= rhs);
+        if(c1 == '\0') return (lhs < rhs);
+    }
     return false;
 }
 
@@ -248,6 +268,7 @@ int vn_script_load(const char *path) {
             vn_label_entry_t *le = &vm_st.labels[vm_st.label_count++];
             vn_copy_str(le->name, sizeof(le->name), arg);
             le->line_idx = idx;
+            le->hash = fnv1a_hash(le->name);
         }
 
         idx++;
@@ -276,8 +297,9 @@ int vn_script_load(const char *path) {
 int vn_script_jump_label(const char *label) {
     if(!label)
         return -1;
+    uint32_t h = fnv1a_hash(label);
     for(int i = 0; i < vm_st.label_count; i++) {
-        if(strcmp(vm_st.labels[i].name, label) == 0) {
+        if(vm_st.labels[i].hash == h && strcmp(vm_st.labels[i].name, label) == 0) {
             vm_st.pc = vm_st.labels[i].line_idx;
             return 0;
         }
