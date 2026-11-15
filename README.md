@@ -1,10 +1,10 @@
 <!-- PROJECT LOGO -->
 <div align="center">
-  <h1 align="center"><strong>KallistiOS-VN</strong></h1>
+  <h1 align="center"><strong>KallistiOS-VisualNovel (KallistiOS-VN)</strong></h1>
   <p align="center">
-    セガ・ドリームキャスト（Dreamcast）向け ノベルゲーム専用 OS &amp; C言語エンジン層 (<code>libkosvn</code>)
+    <strong>KallistiOS ノベルゲーム特化版</strong> — セガ・ドリームキャスト（Dreamcast）向け ノベルゲーム専用 OS &amp; C言語エンジン層 (<code>libkosvn</code>)
     <br />
-    <em>Independent SDK &amp; Visual Novel Runtime forked from KallistiOS</em>
+    <em>Visual Novel Specialized OS &amp; C Engine Runtime for the Sega Dreamcast (Forked from KallistiOS)</em>
   </p>
 </div>
 
@@ -22,7 +22,7 @@
 8. [実機／エミュレータでのコントローラ操作一覧](#8-実機エミュレータでのコントローラ操作一覧)
 9. [LAN デバッグ &amp; UDP テレメトリの使い方](#9-lan-デバッグ--udp-テレメトリの使い方)
 10. [主要 C API リファレンス (`kosvn.h`)](#10-主要-c-api-リファレンス-kosvnh)
-11. [Upstream KallistiOS Overview &amp; License](#upstream-kallistios-overview--license)
+11. [Upstream KallistiOS Overview &amp; License（本家概要・ライセンス 和文併記）](#upstream-kallistios-overview--license)
 
 ---
 
@@ -357,51 +357,66 @@ while True:
 
 <!-- UPSTREAM OVERVIEW -->
 <div align="center">
-  <h2 align="center"><strong>KallistiOS</strong></h2>
+  <h2 align="center"><strong>KallistiOS-VisualNovel (Upstream: KallistiOS)</strong></h2>
   <p align="center">
-    Independent SDK for the Sega Dreamcast
+    Independent SDK for the Sega Dreamcast（セガ・ドリームキャスト向け独立系オープンソース SDK）
     <br />
-    <a href="https://kos-docs.dreamcast.wiki"><strong>Explore the docs »</strong></a>
+    <a href="https://kos-docs.dreamcast.wiki"><strong>Explore the docs / 公式ドキュメント »</strong></a>
   </p>
 </div>
 
-### Overview
+### Overview / 概要（和文併記）
 
-KallistiOS is a development library and operating system for the Sega Dreamcast game console, developed independently from Sega entirely by free software developers. Its flexible permissive license allows both homebrew and commercial use with little restrictions besides proper attribution. As a result, it powers most homebrew and commercial indie releases for the platform. Interfaces and drivers are included for a significant portion of the Dreamcast's hardware capabilities and accessories, including modifications created by hobbyists. 
+KallistiOS is a development library and operating system for the Sega Dreamcast game console, developed independently from Sega entirely by free software developers. Its flexible permissive license allows both homebrew and commercial use with little restrictions besides proper attribution. As a result, it powers most homebrew and commercial indie releases for the platform. Interfaces and drivers are included for a significant portion of the Dreamcast's hardware capabilities and accessories, including modifications created by hobbyists.
+
+> **和訳（概要）:** KallistiOS は、セガ公式とは独立してフリーソフトウェア開発者により開発されている、セガ・ドリームキャスト向けの開発ライブラリ兼オペレーティングシステムです。適切な著作権表示（クレジット表記）を行えば自作（Homebrew）・商用を問わず利用できる柔軟なライセンスを採用しており、同プラットフォーム向けの多くの自作・インディー商用タイトルの基盤となっています。本体ハードウェア機能や純正周辺機器、有志による改造パーツ向けの各種インタフェースやドライバを備えています。
 
 KallistiOS offers a modern, programmer friendly environment for the vintage Dreamcast system. The distribution includes [scripts for building and installing a cross-compiling toolchain](utils/kos-chain/README.md) using the latest GCC, Binutils, and Newlib. This allows for full support for C17 and C++20 standards and libraries, as well as various POSIX APIs. Preliminary support exists for C23, C++23, and Objective-C.
 
+> **和訳（開発環境）:** 最新の GCC・Binutils・Newlib を使った[クロスコンパイルツールチェイン構築スクリプト](utils/kos-chain/README.md)が含まれており、実機向けながらモダンな開発環境を提供します。C17 / C++20 標準ライブラリや各種 POSIX API をフルサポートし、C23 / C++23 / Objective-C の試験的サポートも備えています。
+
 KallistiOS also features a package manager called [**_kos-ports_**](https://github.com/KallistiOS/kos-ports) which gives developers the power to build and include a rich set of add-on libraries for various common audiovisual formats (jpg, png, mp3, ogg, mpeg), compression formats (libbz2, zlib), scripting languages (Lua, Tcl, MicroPython), gaming APIs (OpenGL, OpenAL, SDL), and many more.
 
-### Core Functionality
-* Concurrency with Kernel Threads, C11 Threads, C++11 `std::thread`, POSIX threads
-* Virtual Filesystem Abstraction
-* IPv4/IPv6 Network Stack
-* Dynamically Loaded Libraries and Modules
-* GDB Debugger Support
+> **和訳（追加ライブラリ）:** [**_kos-ports_**](https://github.com/KallistiOS/kos-ports) と呼ばれるパッケージ機構により、画像・音声（jpg, png, mp3, ogg, mpeg）、圧縮（libbz2, zlib）、スクリプト言語（Lua, Tcl, MicroPython）、各種 API（OpenGL, OpenAL, SDL など）を追加組み込みできます。
 
-### Dreamcast Hardware Support (Upstream Reference)
-* Optical Disc Drive
-* Low-level 3D PowerVR Graphics 
-* SH4 ASM-Optimized Math Routines
-* SH4 SCI and SCIF Serial I/O
-* DMA Controller 
-* FlashROM Filesystem
-* AICA SPU Sound Processor Driver
-* Cache and Store Queue Management
-* Timer Peripherals, Real-Time Clock, Watchdog Timer
-* Performance Counters
-* MMU Management
+### Core Functionality / コア機能（和文併記）
+* Concurrency with Kernel Threads, C11 Threads, C++11 `std::thread`, POSIX threads  
+  （カーネルスレッド / C11スレッド / C++11 `std::thread` / POSIX スレッドによる並行処理）
+* Virtual Filesystem Abstraction  
+  （仮想ファイルシステム抽象化 VFS）
+* IPv4/IPv6 Network Stack  
+  （IPv4/IPv6 ネットワークスタック）
+* Dynamically Loaded Libraries and Modules  
+  （動的ロード可能なライブラリ / モジュール）
+* GDB Debugger Support  
+  （GDB デバッガサポート）
 
-### Getting Started (Upstream)
-A beginner's guide to development for the Sega Dreamcast along with detailed instructions for installing KOS and the required toolchains can be found on [dreamcast.wiki](https://dreamcast.wiki/Getting_Started_with_Dreamcast_development). Additional documentation can be found in the docs folder. 
+### Dreamcast Hardware Support (Upstream Reference) / ドリームキャスト対応ハードウェア（本家リファレンス・和文併記）
+* Optical Disc Drive（GD-ROM / 光学ディスクドライブ）
+* Low-level 3D PowerVR Graphics（低レベル PowerVR2 グラフィックス）
+* SH4 ASM-Optimized Math Routines（SH-4 アセンブリ最適化済み数値演算ルーチン ※`KallistiOS-VN` では 3D 行列演算を除外）
+* SH4 SCI and SCIF Serial I/O（SH-4 SCI / SCIF シリアル入出力）
+* DMA Controller（DMA コントローラ）
+* FlashROM Filesystem（FlashROM ファイルシステム）
+* AICA SPU Sound Processor Driver（AICA サウンドプロセッサドライバ）
+* Cache and Store Queue Management（キャッシュおよびストアキュー管理）
+* Timer Peripherals, Real-Time Clock, Watchdog Timer（タイマー・RTC・ウォッチドッグタイマー）
+* Performance Counters（パフォーマンスカウンタ）
+* MMU Management（MMU メモリ管理）
 
-### Licensing
+### Getting Started (Upstream) / はじめに（本家ドキュメント案内・和文併記）
+A beginner's guide to development for the Sega Dreamcast along with detailed instructions for installing KOS and the required toolchains can be found on [dreamcast.wiki](https://dreamcast.wiki/Getting_Started_with_Dreamcast_development). Additional documentation can be found in the docs folder.
+
+> **和訳:** ドリームキャスト開発の初心者向けガイドおよび KOS／ツールチェイン導入手順は [dreamcast.wiki](https://dreamcast.wiki/Getting_Started_with_Dreamcast_development) に掲載されています。リポジトリ内の `doc` フォルダにも各種ドキュメントがあります。
+
+### Licensing / ライセンス（和文併記）
 KallistiOS itself is licensed under the BSD-like **KOS License**. **Attribution is not optional**. Additionally, this distribution contains code licensed under various free software licenses.
 See [LICENSE.md](doc/LICENSE.md) for more information on licensing, as well as [LICENSE.KOS](doc/license/LICENSE.KOS) for the actual **KOS License** text.
 
-### Resources
-[dreamcast.wiki](http://dreamcast.wiki): Large collection of tutorials and articles for beginners  
-[Simulant Discord Chat](https://discord.gg/bpDZHT78PA): Home to the official Discord channel of KOS  
-[DCEmulation Forums](http://dcemulation.org/phpBB/viewforum.php?f=29): Goldmine of Dreamcast development information and history  
-IRC Channel: irc.libera.chat `#dreamcastdev`
+> **和訳:** KallistiOS 本体は BSD ライセンスに類似した **KOS License** の下で公開されています。**著作権表示（Attribution）は必須**です。また、本ディストリビューションには各種フリーソフトウェアライセンスのコードが含まれています。詳細は [LICENSE.md](doc/LICENSE.md) および **KOS License** 本文の [LICENSE.KOS](doc/license/LICENSE.KOS) を参照してください。
+
+### Resources / 関連リソース（和文併記）
+* [dreamcast.wiki](http://dreamcast.wiki): Large collection of tutorials and articles for beginners（初心者向けチュートリアル・技術記事集）
+* [Simulant Discord Chat](https://discord.gg/bpDZHT78PA): Home to the official Discord channel of KOS（KOS 公式 Discord チャンネル）
+* [DCEmulation Forums](http://dcemulation.org/phpBB/viewforum.php?f=29): Goldmine of Dreamcast development information and history（ドリームキャスト開発情報・歴史フォーラム）
+* IRC Channel: irc.libera.chat `#dreamcastdev`（IRC 開発チャンネル）
