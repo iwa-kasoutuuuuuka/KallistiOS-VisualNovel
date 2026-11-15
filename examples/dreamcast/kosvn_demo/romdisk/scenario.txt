@@ -1,0 +1,66 @@
+# KallistiOS-VN Sample Scenario (Shift-JIS)
+SET 0 0
+BG proc:night_sky
+BGM proc:ambient_calm
+FADE 0xFF000000 0
+FADE 0x00000000 600
+WAIT_FX
+
+NAME システム
+TEXT KallistiOS-VN ノベル専用カーネル起動完了。\nモデム・キーボード・ガンコン・複雑な3D行列演算を削減し、\nデバッグ用LANとノベルエンジン層(libkosvn)を統合しました。
+
+CHAR left proc:sakura_smile
+SE proc:chime
+NAME サクラ
+TEXT 「わあ、DreamcastのPowerVR2だけで\nこんなに滑らかにウィンドウと立ち絵が出るんだね！」
+
+CHAR right proc:rei_normal
+NAME レイ
+TEXT 「BIOSフォント内蔵のShift-JISテキスト描画、\nAICAストリーミングBGM、VMUセーブ/ロードまで\nC言語ライブラリ1つで完結しているよ。」
+
+BG proc:cyber_lab
+CHAR left proc:sakura_surprised
+SHAKE 8.0 360
+SE proc:flash
+NAME サクラ
+TEXT 「おおっ！画面シェイクにフラッシュエフェクト！\nしかも今、LAN経由でフレーム数やRAM残量も飛んでるの？」
+
+NAME レイ
+TEXT 「UDPポート47890番へ毎秒テレメトリを送信中。\ndcload-ipと併用すれば実機デバッグも快適だね。\n次はどちらの機能を確認してみようか？」
+
+CHOICE
+OPTION VMUセーブとバックログ機能について聞く | route_vmu
+OPTION LANデバッグとカーネル削減の詳細を見る | route_lan
+
+LABEL route_vmu
+SET 0 1
+CHAR right proc:rei_smile
+NAME レイ
+TEXT 「Lトリガーを押しながらAボタンでVMUスロット0に保存、\nBボタンでロードができる。VMU液晶ロゴも更新済みさ。\nYボタンでバックログ、Xボタンでオート送りにも対応しているよ。」
+GOTO finale
+
+LABEL route_lan
+SET 0 2
+CHAR right proc:rei_smile
+NAME レイ
+TEXT 「modem・matrix3d・各種不要周辺機器を切り離したことで、\nlibkallisti.a自体も軽量化され、立ち上げも高速化したよ。\ndcloadとソケット通信はそのまま残してある。」
+GOTO finale
+
+LABEL finale
+CLEAR_CHAR all
+BG proc:shrine_sunset
+CHAR center proc:sakura_smile
+IF 0 == 1 GOTO finale_vmu
+NAME サクラ
+TEXT 「よし、ネットワーク監視しながらシナリオ開発を進めよう！\nDreamcastで専用ノベルゲーム、きっと作れるよ！」
+GOTO ending
+
+LABEL finale_vmu
+NAME サクラ
+TEXT 「セーブデータ管理もばっちりだね！\nDreamcastのVMUと一緒に物語を紡いでいこう！」
+
+LABEL ending
+BGM stop
+FADE 0xFF000000 700
+WAIT_FX
+END
