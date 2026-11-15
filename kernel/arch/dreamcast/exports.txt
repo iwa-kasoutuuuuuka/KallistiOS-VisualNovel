@@ -196,8 +196,6 @@ vid_shutdown
 
 # Maple
 cont_btn_callback
-kbd_set_queue
-kbd_get_key
 maple_driver_reg
 maple_driver_unreg
 maple_driver_attach
@@ -254,14 +252,6 @@ mat_load
 mat_identity
 mat_apply
 mat_transform
-mat_translate
-mat_scale
-mat_rotate_x
-mat_rotate_y
-mat_rotate_z
-mat_rotate
-mat_perspective
-mat_lookat
 # PVR
 pvr_txr_load_dma
 pvr_dma_ready

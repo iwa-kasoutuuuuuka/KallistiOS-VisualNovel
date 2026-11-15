@@ -55,22 +55,10 @@ __BEGIN_DECLS
     KOS_INIT_FLAG(flags, INIT_CDROM, fs_iso9660_shutdown); \
     KOS_INIT_FLAG(flags, INIT_CONTROLLER, cont_init); \
     KOS_INIT_FLAG(flags, INIT_CONTROLLER, cont_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_KEYBOARD, kbd_init); \
-    KOS_INIT_FLAG(flags, INIT_KEYBOARD, kbd_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_MOUSE, mouse_init); \
-    KOS_INIT_FLAG(flags, INIT_MOUSE, mouse_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_LIGHTGUN, lightgun_init); \
-    KOS_INIT_FLAG(flags, INIT_LIGHTGUN, lightgun_shutdown); \
     KOS_INIT_FLAG(flags, INIT_VMU, vmu_init); \
     KOS_INIT_FLAG(flags, INIT_VMU, vmu_shutdown); \
     KOS_INIT_FLAG(flags, INIT_VMU, vmu_fs_init); \
     KOS_INIT_FLAG(flags, INIT_VMU, vmu_fs_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_PURUPURU, purupuru_init); \
-    KOS_INIT_FLAG(flags, INIT_PURUPURU, purupuru_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_SIP, sip_init); \
-    KOS_INIT_FLAG(flags, INIT_SIP, sip_shutdown); \
-    KOS_INIT_FLAG(flags, INIT_DREAMEYE, dreameye_init); \
-    KOS_INIT_FLAG(flags, INIT_DREAMEYE, dreameye_shutdown); \
     KOS_INIT_FLAG(flags, INIT_MAPLE_ALL, maple_wait_scan); \
     KOS_INIT_FLAG(flags, INIT_MAPLE_ALL, maple_init); \
     KOS_INIT_FLAG(flags, INIT_MAPLE_ALL, maple_shutdown)
@@ -90,19 +78,14 @@ __BEGIN_DECLS
 /** \brief Default init flags for the Dreamcast. */
 #define INIT_DEFAULT_ARCH   (INIT_MAPLE_ALL | INIT_CDROM)
 
-/** \brief Enable all Maple peripheral drivers. */
-#define INIT_MAPLE_ALL      (INIT_CONTROLLER | INIT_KEYBOARD | INIT_MOUSE    | \
-                             INIT_LIGHTGUN   | INIT_VMU      | INIT_PURUPURU | \
-                             INIT_SIP        | INIT_DREAMEYE)
+/** \brief Default init flags for Visual Novel OS (with LAN debugging). */
+#define INIT_VN_DEFAULT     (INIT_DEFAULT | INIT_NET)
+
+/** \brief Enable all Maple peripheral drivers (VN specialized: Controller & VMU). */
+#define INIT_MAPLE_ALL      (INIT_CONTROLLER | INIT_VMU)
 
 #define INIT_CONTROLLER     0x00004000  /**< \brief Enable Controller maple driver */
-#define INIT_KEYBOARD       0x00008000  /**< \brief Enable Keyboard maple driver */
-#define INIT_MOUSE          0x00010000  /**< \brief Enable Mouse maple driver */
-#define INIT_LIGHTGUN       0x00020000  /**< \brief Enable Lightgun maple driver */
 #define INIT_VMU            0x00040000  /**< \brief Enable VMU maple driver */
-#define INIT_PURUPURU       0x00080000  /**< \brief Enable Puru Puru maple driver */
-#define INIT_SIP            0x00100000  /**< \brief Enable Sound input maple driver */
-#define INIT_DREAMEYE       0x00200000  /**< \brief Enable DreamEye maple driver */
 
 #define INIT_CDROM          0x00100000  /**< \brief Enable CD-ROM support */
 

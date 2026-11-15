@@ -9,11 +9,10 @@ OBJS := maple_driver.o maple_enum.o maple_globals.o
 OBJS := $(OBJS) maple_init_shutdown.o maple_irq.o
 OBJS := $(OBJS) maple_queue.o maple_utils.o
 
-# Various input devices
-OBJS := $(OBJS) controller.o keyboard.o mouse.o
-OBJS := $(OBJS) purupuru.o sip.o dreameye.o lightgun.o
+# Various input devices (VN specialized: Controller only)
+OBJS := $(OBJS) controller.o
 
-# Output devices
+# Output devices (VN specialized: VMU only)
 OBJS := $(OBJS) vmu.o
 
 SUBDIRS =

@@ -18,13 +18,7 @@
 #include <kos/genwait.h>
 
 #include <dc/maple/controller.h>
-#include <dc/maple/keyboard.h>
-#include <dc/maple/mouse.h>
 #include <dc/maple/vmu.h>
-#include <dc/maple/purupuru.h>
-#include <dc/maple/sip.h>
-#include <dc/maple/dreameye.h>
-#include <dc/maple/lightgun.h>
 
 /*
   This system handles low-level communication/initialization of the maple
@@ -227,47 +221,23 @@ void maple_wait_scan(void) {
 }
 
 KOS_INIT_FLAG_WEAK(cont_init, true);
-KOS_INIT_FLAG_WEAK(kbd_init, true);
-KOS_INIT_FLAG_WEAK(mouse_init, true);
-KOS_INIT_FLAG_WEAK(lightgun_init, true);
 KOS_INIT_FLAG_WEAK(vmu_init, true);
-KOS_INIT_FLAG_WEAK(purupuru_init, true);
-KOS_INIT_FLAG_WEAK(sip_init, true);
-KOS_INIT_FLAG_WEAK(dreameye_init, true);
 
 /* Full init: initialize known drivers and start maple operations */
 void maple_init(void) {
-    KOS_INIT_FLAG_CALL(lightgun_init);
     KOS_INIT_FLAG_CALL(cont_init);
-    KOS_INIT_FLAG_CALL(kbd_init);
-    KOS_INIT_FLAG_CALL(mouse_init);
     KOS_INIT_FLAG_CALL(vmu_init);
-    KOS_INIT_FLAG_CALL(purupuru_init);
-    KOS_INIT_FLAG_CALL(sip_init);
-    KOS_INIT_FLAG_CALL(dreameye_init);
 
     maple_hw_init();
 }
 
 KOS_INIT_FLAG_WEAK(cont_shutdown, true);
-KOS_INIT_FLAG_WEAK(kbd_shutdown, true);
-KOS_INIT_FLAG_WEAK(mouse_shutdown, true);
-KOS_INIT_FLAG_WEAK(lightgun_shutdown, true);
 KOS_INIT_FLAG_WEAK(vmu_shutdown, true);
-KOS_INIT_FLAG_WEAK(purupuru_shutdown, true);
-KOS_INIT_FLAG_WEAK(sip_shutdown, true);
-KOS_INIT_FLAG_WEAK(dreameye_shutdown, true);
 
 /* Full shutdown: shutdown each driver, then all hardware operations. */
 void maple_shutdown(void) {
-    KOS_INIT_FLAG_CALL(dreameye_shutdown);
-    KOS_INIT_FLAG_CALL(sip_shutdown);
-    KOS_INIT_FLAG_CALL(purupuru_shutdown);
     KOS_INIT_FLAG_CALL(vmu_shutdown);
-    KOS_INIT_FLAG_CALL(mouse_shutdown);
-    KOS_INIT_FLAG_CALL(kbd_shutdown);
     KOS_INIT_FLAG_CALL(cont_shutdown);
-    KOS_INIT_FLAG_CALL(lightgun_shutdown);
 
     maple_hw_shutdown();
 }
