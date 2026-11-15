@@ -33,8 +33,10 @@
 汎用ゲーム機 SDK から 3D 行列演算や特殊周辺機器ドライバを切り離しつつ、ノベルゲーム制作に必要な全機能（PowerVR2 2D合成・BIOS フォントによる Shift-JIS 日本語描画・シナリオ VM・VMU セーブ/ロード・AICA サウンド・LAN 経由リアルタイムデバッグ）を C言語アドオンライブラリ **`libkosvn`** として統合しています。
 
 ### 主な想定用途
+* **『EVE』シリーズ型マルチサイト／コマンド総当たり探偵 ADV の開発**
+  複数主人公の視点ザッピング（`SITE_INIT` / `SITE_SWITCH` / `L+X`）、フラグ条件付きコマンド出現（`OPTION_IF`）、調査サブルーチン（`CALL` / `RET` / `@call:`）、証拠品カットイン（`CUTIN`）、台詞送り自動停止ボイス（`VOICE`）を標準サポートしています。
 * **ドリームキャスト向けオリジナル／同人ノベルゲームのスクラッチ開発**
-  スクリプトファイル（`/rd/scenario.txt`）を書くだけで、テキスト送り・選択肢分岐・立ち絵管理・画面演出・VMU セーブまで一式が即動作します。
+  スクリプトファイル（`/rd/scenario.txt`）を書くだけで、テキスト送り・選択肢分岐・立ち絵管理・画面演出・VMU セーブ（全サイト状態＋256フラグ一括保存）まで一式が即動作します。
 * **C言語による高速・省メモリな専用ゲーム基盤**
   `kosvn_demo.elf` 構成でも静的フットプリントは約 515 KB（16 MB RAM 中、約 15 MB 以上をリソースやバッファに活用可能）に収まります。
 * **LAN (`dcload-ip` + UDP) を活用した実機快適デバッグ**
@@ -215,17 +217,27 @@ $(TARGET): $(OBJS)
 | `CLEAR_CHAR` | `CLEAR_CHAR [left\|center\|right\|all]` | 指定スロットまたは全スロット（`all`）の立ち絵を消去します。 |
 | `NAME` | `NAME <話者名>` | メッセージウィンドウ上の話者名バッジを設定します。`none` で非表示。 |
 | `TEXT` | `TEXT <本文>` | 本文をタイプライター表示し、プレイヤーの決定入力（または Auto/Skip）を待ちます。 |
-| `CHOICE` | `CHOICE` | 続く `OPTION` 行をまとめて選択肢カードとして画面中央に表示し、選択を待ちます。 |
-| `OPTION` | `OPTION <表示テキスト> \| <ジャンプ先LABEL>` | `CHOICE` の直下に記述します（最大 4 つ）。選択されると指定ラベルへジャンプします。 |
-| `LABEL` | `LABEL <ラベル名>` | `GOTO` / `OPTION` / `IF` のジャンプ先ラベルを定義します。 |
+| `CHOICE` | `CHOICE` | 続く `OPTION` / `OPTION_IF` 行をまとめて選択肢・捜査コマンドカードとして表示し、選択を待ちます（最大 6 つ）。 |
+| `OPTION` | `OPTION <表示テキスト> \| <ジャンプ先>` | `CHOICE` の直下に記述します。ジャンプ先には通常の `LABEL` に加え、`@call:<LABEL>`（調査サブルーチン呼び出し）や `@site:<0\|1>`（視点切替）を指定できます。 |
+| `OPTION_IF` | `OPTION_IF <フラグ番号> <演算子> <値> <表示テキスト> \| <ジャンプ先>` | 条件を満たしたときだけメニューに表示されるコマンド／選択肢を定義します（演算子は `==`, `!=`, `>=`, `<=`, `>`, `<`）。 |
+| `SITE_INIT` | `SITE_INIT <ID(0\|1)> <表示名> <開始LABEL>` | マルチサイト（Multi-Sight）機能を有効化し、各主人公（例: `0 小次郎`, `1 まりな`）の開始ラベルと右上HUD表示名を登録します。 |
+| `SITE_SWITCH` | `SITE_SWITCH <ID(0\|1)>` | 現在のサイトの行位置・背景・立ち絵・カットイン・BGM を保存し、指定サイトの実行状態へ即座に切り替えます。 |
+| `SITE_LOCK` | `SITE_LOCK [ID] [0\|1]` | 指定サイト（省略時は現在サイト）のロック状態フラグを設定します。 |
+| `LABEL` | `LABEL <ラベル名>` | `GOTO` / `CALL` / `OPTION` / `IF` 等のジャンプ先ラベルを定義します（最大 128 個）。 |
 | `GOTO` | `GOTO <ラベル名>` | 指定した `LABEL` へ無条件ジャンプします。 |
-| `SET` | `SET <フラグ番号(0..63)> <整数値>` | ゲーム内フラグ変数（64 個分・VMU セーブ対象）に整数値を代入します。 |
-| `IF` | `IF <番号> <比較演算子> <値> GOTO <ラベル名>` | 条件成立時にジャンプします。演算子は `==`, `!=`, `>=`, `<=`, `>`, `<` に対応。 |
+| `CALL` | `CALL <ラベル名>` | 現在位置をコールスタック（最大 8 段）に積んでサブルーチンラベルへジャンプします。`CHOICE` 内の `@call:<LABEL>` でも利用可能。 |
+| `RET` | `RET` | `CALL` / `@call:` 呼び出し元（捜査完了後にコマンドメニューへ復帰等）へ戻ります。 |
+| `SET` | `SET <フラグ番号(0..255)> <整数値>` | ゲーム内フラグ変数（256 個分・VMU セーブ対象）に整数値を代入します。 |
+| `ADD` | `ADD <フラグ番号(0..255)> <加算値>` | 指定フラグへ整数値（正負）を加算します（総当たり達成度カウント等に利用）。 |
+| `IF` | `IF <番号> <比較演算子> <値> GOTO <ラベル名>` | 単一条件成立時にジャンプします。演算子は `==`, `!=`, `>=`, `<=`, `>`, `<` に対応。 |
+| `IF_AND` | `IF_AND <番号1> <演算子1> <値1> <番号2> <演算子2> <値2> GOTO <ラベル名>` | 2つのフラグ条件を同時に満たしたときだけジャンプします（複数サイト合流判定用）。 |
+| `CUTIN` | `CUTIN <アセット指定 \| none>` | 画面中央に証拠品・アイテムのカットイン枠を表示／`none` で消去します（`proc:item_keycard` 等や 128x128 RAW16 に対応）。 |
 | `FADE` | `FADE <0xAARRGGBB> <時間ms>` | 画面全体のカラーオーバーレイをフェードさせます（例: 黒フェードアウト `0xFF000000 600`、フェードイン `0x00000000 600`）。 |
 | `SHAKE` | `SHAKE <振幅px> <時間ms>` | 画面とメッセージウィンドウを揺らします（例: `SHAKE 8.0 350`）。 |
 | `WAIT_FX` | `WAIT_FX` | 実行中の `FADE` / `SHAKE` が完了するまで待機します（`A` またはスキップで即解除可）。 |
 | `BGM` | `BGM <アセット指定 \| stop>` | AICA ストリーミング BGM を再生または停止（`stop`）します。 |
-| `SE` | `SE <アセット指定>` | AICA 効果音を再生します。 |
+| `SE` | `SE <アセット指定>` | AICA 効果音を再生します（FIFO 8枠キャッシュ付き）。 |
+| `VOICE` | `VOICE <アセット指定 \| stop>` | 専用ボイスチャンネルで台詞音声を再生します（次の台詞送りやサイト切替時に自動停止）。 |
 | `END` | `END` | シナリオを終了し、`vn_run_script()` を抜けます。 |
 
 ### シナリオ記述例
@@ -279,8 +291,9 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 | --- | --- | --- |
 | **背景 (`BG`)** | `512 x 512` / 16bit **RGB565** (Non-Twiddled Raw) | `640x480` 画面全体にバイリニア補間描画（1枚 `524,288` bytes） |
 | **立ち絵 (`CHAR`)** | `128 x 256` / 16bit **ARGB4444** (Non-Twiddled Raw) | 半透明抜き対応・自動でフェードイン描画（1枚 `65,536` bytes） |
+| **カットイン (`CUTIN`)** | `128 x 128` / 16bit **ARGB4444** (Non-Twiddled Raw) | 証拠品・アイテム小窓枠付きで画面中央に表示（1枚 `32,768` bytes） |
 | **BGM (`BGM`)** | `22050 Hz` / 16bit PCM / モノラル **WAV** | 先頭 44 byte ヘッダを読み飛ばしてストリーミングループ再生 |
-| **効果音 (`SE`)** | KOS `snd_sfx_load()` 対応 **WAV** | AICA サウンドメモリへロードして発音 |
+| **効果音 / ボイス (`SE` / `VOICE`)** | KOS `snd_sfx_load()` 対応 **WAV** | AICA サウンドメモリへロードして発音（`VOICE` は台詞送りで自動停止） |
 
 > ※ 独自解像度やカスタムフォーマットを読み込みたい場合は、C API の `vn_tex_load_raw16(tex, path, w, h, fmt)` を直接呼び出せます。
 
@@ -289,8 +302,9 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 
 * **背景:** `proc:night_sky`（夜空と月・ビル群）、`proc:shrine_sunset`（夕焼けと鳥居）、`proc:cyber_lab`（サイバーグリッド）
 * **立ち絵:** `proc:sakura_normal` / `proc:sakura_smile` / `proc:sakura_surprised`、`proc:rei_normal` / `proc:rei_smile` / `proc:rei_surprised`
+* **カットイン:** `proc:item_keycard`（セキュリティカードキー）、`proc:item_microfilm`（光ディスク／マイクロフィルム）、`proc:item_file`（極秘資料）
 * **BGM:** `proc:ambient_calm`、`proc:ambient_tense`
-* **SE:** `proc:chime`、`proc:select`、`proc:flash`
+* **SE / ボイス:** `proc:chime`、`proc:select`、`proc:flash`、`proc:voice_kojiro`、`proc:voice_marina`
 
 ---
 
@@ -307,7 +321,8 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 | **十字キー 上下** | 選択肢のカーソル移動 ／ バックログ表示中のスクロール |
 | **`R` トリガー（長押し）** | **スキップ (`SKIP`)** 早送り |
 | **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ** |
-| **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（背景・立ち絵・BGM・フラグ・行位置を復元） |
+| **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（全サイト・背景・立ち絵・カットイン・BGM・256フラグを復元） |
+| **`L` トリガー + `X`** | **Multi-Sight サイトザッピング切替**（有効時に小次郎⇔まりな等の視点を即時切替） |
 | **`START` ボタン** | ゲームループ終了 |
 
 ---
@@ -339,11 +354,11 @@ while True:
 シナリオ駆動だけでなく、独自のミニゲームや演出を C言語から直接制御したい場合は以下の関数群を利用できます。
 
 * **ライフサイクル:** `vn_init()`, `vn_shutdown()`, `vn_run_script()`, `vn_step_frame()`
-* **グラフィックス / 演出:** `vn_bg_set()`, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_fx_fade()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`
+* **グラフィックス / 演出:** `vn_bg_set()`, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_cutin_set()`, `vn_cutin_clear()`, `vn_fx_fade()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`
 * **テキスト / 選択肢 / 履歴:** `vn_text_set_speaker()`, `vn_text_set_dialogue()`, `vn_text_add_choice()`, `vn_backlog_push()`, `vn_backlog_set_visible()`
-* **スクリプト VM:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`
+* **スクリプト VM & Multi-Sight:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_call_label()`, `vn_script_return()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`, `vn_script_add_flag()`, `vn_site_init()`, `vn_site_switch()`, `vn_site_get_active()`, `vn_site_is_enabled()`, `vn_site_set_locked()`, `vn_site_is_locked()`
 * **VMU:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_draw_logo()`
-* **サウンド:** `vn_audio_play_bgm()`, `vn_audio_stop_bgm()`, `vn_audio_play_se()`
+* **サウンド:** `vn_audio_play_bgm()`, `vn_audio_stop_bgm()`, `vn_audio_play_se()`, `vn_audio_play_voice()`, `vn_audio_stop_voice()`
 * **LAN デバッグ:** `vn_netdbg_init()`, `vn_netdbg_log()`, `vn_netdbg_send_telemetry()`
 
 ---

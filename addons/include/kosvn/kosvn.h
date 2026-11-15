@@ -15,13 +15,15 @@
 
 __BEGIN_DECLS
 
-#define VN_MAX_SPRITES   3
-#define VN_MAX_CHOICES   4
-#define VN_MAX_FLAGS     64
-#define VN_MAX_LABELS    64
-#define VN_BACKLOG_SIZE  32
-#define VN_SAVE_MAGIC    0x4B564E31U /* "KVN1" */
-#define VN_SAVE_VERSION  1U
+#define VN_MAX_SPRITES     3
+#define VN_MAX_CHOICES     6
+#define VN_MAX_FLAGS       256
+#define VN_MAX_LABELS      128
+#define VN_MAX_SITES       2
+#define VN_MAX_CALL_DEPTH  8
+#define VN_BACKLOG_SIZE    32
+#define VN_SAVE_MAGIC      0x4B564E32U /* "KVN2" */
+#define VN_SAVE_VERSION    2U
 
 typedef enum vn_sprite_pos {
     VN_POS_LEFT   = 0,
@@ -45,16 +47,36 @@ typedef struct vn_tex {
     uint32_t  fmt;
 } vn_tex_t;
 
-typedef struct vn_save_state {
-    uint32_t magic;
-    uint32_t version;
+typedef struct vn_site_save {
+    uint8_t  initialized;
+    uint8_t  locked;
+    uint16_t call_depth;
     uint32_t script_line;
-    char     script_path[64];
+    uint32_t call_stack[VN_MAX_CALL_DEPTH];
+    char     site_name[32];
     char     bg_name[64];
     char     char_names[VN_MAX_SPRITES][64];
+    char     cutin_name[64];
     char     speaker_name[64];
     char     bgm_name[64];
-    int32_t  flags[VN_MAX_FLAGS];
+} vn_site_save_t;
+
+typedef struct vn_save_state {
+    uint32_t       magic;
+    uint32_t       version;
+    uint32_t       script_line;
+    char           script_path[64];
+    char           bg_name[64];
+    char           char_names[VN_MAX_SPRITES][64];
+    char           speaker_name[64];
+    char           bgm_name[64];
+    int32_t        flags[VN_MAX_FLAGS];
+    char           cutin_name[64];
+    uint8_t        multi_sight_enabled;
+    uint8_t        active_site;
+    uint16_t       call_depth;
+    uint32_t       call_stack[VN_MAX_CALL_DEPTH];
+    vn_site_save_t sites[VN_MAX_SITES];
 } vn_save_state_t;
 
 /* Core lifecycle & main loop */
@@ -77,6 +99,9 @@ void vn_char_clear_all(void);
 void vn_fx_fade(uint32_t target_argb, uint32_t duration_ms);
 void vn_fx_shake(float amplitude, uint32_t duration_ms);
 bool vn_fx_is_busy(void);
+int  vn_cutin_set(const char *asset_spec);
+void vn_cutin_clear(void);
+const char *vn_cutin_get_name(void);
 void vn_gfx_render_frame(void);
 
 /* Text, Dreamcast BIOS font (Shift-JIS), choices & backlog */
@@ -100,25 +125,37 @@ void        vn_backlog_scroll(int delta);
 void        vn_text_set_status_overlay(const char *status_line);
 void        vn_text_render_to_pvr(void);
 
-/* Scenario script VM */
+/* Scenario script VM & Multi-Sight */
 int         vn_script_load(const char *path);
 void        vn_script_unload(void);
 int         vn_script_jump_label(const char *label);
 int         vn_script_advance(void);
 void        vn_script_set_flag(int idx, int32_t val);
 int32_t     vn_script_get_flag(int idx);
+void        vn_script_add_flag(int idx, int32_t delta);
+int         vn_script_call_label(const char *label);
+int         vn_script_return(void);
 uint32_t    vn_script_get_line(void);
 const char *vn_script_get_path(void);
+int         vn_site_init(int site_id, const char *site_name_sjis, const char *start_label);
+int         vn_site_switch(int site_id);
+int         vn_site_get_active(void);
+bool        vn_site_is_enabled(void);
+const char *vn_site_get_name(int site_id);
+void        vn_site_set_locked(int site_id, bool locked);
+bool        vn_site_is_locked(int site_id);
 
 /* VMU save/load & LCD */
 int  vn_vmu_save(int slot, const vn_save_state_t *state);
 int  vn_vmu_load(int slot, vn_save_state_t *state_out);
 void vn_vmu_draw_logo(const char *short_tag);
 
-/* AICA Audio (BGM stream & SFX) */
+/* AICA Audio (BGM stream, SFX & Voice) */
 int  vn_audio_play_bgm(const char *path_or_spec);
 void vn_audio_stop_bgm(void);
 int  vn_audio_play_se(const char *path_or_spec);
+int  vn_audio_play_voice(const char *path_or_spec);
+void vn_audio_stop_voice(void);
 
 /* LAN / UDP debug telemetry */
 int  vn_netdbg_init(const char *dest_ip, uint16_t port);

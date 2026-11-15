@@ -1,5 +1,8 @@
-# KallistiOS-VN Sample Scenario (Shift-JIS)
+# KallistiOS-VisualNovel EVE-Series Multi-Sight Sample (Shift-JIS CP932)
 SET 0 0
+SET 1 0
+SET 2 0
+SET 3 0
 BG proc:night_sky
 BGM proc:ambient_calm
 FADE 0xFF000000 0
@@ -7,57 +10,113 @@ FADE 0x00000000 600
 WAIT_FX
 
 NAME システム
-TEXT KallistiOS-VN ノベル専用カーネル起動完了。\nモデムや不要ドライバ・複雑な3D行列演算を削減し、\nデバッグ用LANとノベルエンジン(libkosvn)を統合！
+TEXT EVEシリーズ特化 Multi-Sight エンジン起動完了。\nマルチサイト(L+X切替)・条件付捜査コマンド・\nカットイン・ボイス制御が libkosvn で動作します。
 
-CHAR left proc:sakura_smile
-SE proc:chime
-NAME サクラ
-TEXT 「わあ、DreamcastのPowerVR2だけで\nこんなに滑らかにウィンドウと立ち絵が出るんだ！」
+SITE_INIT 0 小次郎 site_kojiro
+SITE_INIT 1 まりな site_marina
+SITE_SWITCH 0
 
-CHAR right proc:rei_normal
-NAME レイ
-TEXT 「BIOSフォント内蔵のShift-JISテキスト描画、\nAICAストリーミングBGM、VMUセーブ/ロードまで\nC言語ライブラリ1つで完結しているよ。」
-
-BG proc:cyber_lab
-CHAR left proc:sakura_surprised
-SHAKE 8.0 360
-SE proc:flash
-NAME サクラ
-TEXT 「おおっ！画面シェイクにフラッシュエフェクト！\nしかもLAN経由でフレーム数やRAM残量も飛んでるの？」
-
-NAME レイ
-TEXT 「UDPポート47890番へ毎秒テレメトリを送信中。\ndcload-ipと併用すれば実機デバッグも快適だね。\n次はどちらの機能を確認してみようか？」
+LABEL site_kojiro
+BG proc:night_sky
+BGM proc:ambient_calm
+CHAR left proc:sakura_normal
+VOICE proc:voice_kojiro
+NAME 小次郎
+TEXT 「真夜中の事務所か……事件の手掛かりを探そう。\nどのコマンドで捜査を進める？」
 
 CHOICE
-OPTION VMUセーブとバックログ機能について聞く | route_vmu
-OPTION LANデバッグとカーネル削減の詳細を見る | route_lan
+OPTION 【見る】周囲を調べる | @call:kojiro_look
+OPTION_IF 1 == 0 【調べる】机のカードキー | @call:kojiro_desk
+OPTION_IF 1 == 1 【調べる】金庫のマイクロフィルム | @call:kojiro_film
+OPTION 【聞く】無線で状況を連絡 | @call:kojiro_radio
+OPTION 【サイト切替】まりな側へ (L+X) | @site:1
+OPTION_IF 2 == 1 【突入】ロック解除・合流へ | finale_converge
 
-LABEL route_vmu
-SET 0 1
-CHAR right proc:rei_smile
-NAME レイ
-TEXT 「L+AボタンでVMUスロット0へセーブ、\nL+Bボタンでロード！VMU液晶ロゴも更新済みさ。\nYでバックログ、Xでオート送りにも対応しているよ。」
-GOTO finale
+LABEL kojiro_look
+NAME 小次郎
+TEXT 「窓の外は静かな夜空だ。怪しい人影はない。\n机の上が気になるところだな……。」
+RET
 
-LABEL route_lan
-SET 0 2
-CHAR right proc:rei_smile
-NAME レイ
-TEXT 「modem・matrix3d・不要周辺機器を切り離したことで、\nlibkallisti.aも軽量化され、起動も高速化したよ。\ndcloadとソケット通信はそのまま残してある。」
-GOTO finale
+LABEL kojiro_desk
+CUTIN proc:item_keycard
+SET 1 1
+ADD 3 1
+NAME 小次郎
+TEXT 「机の引き出しにセキュリティカードキーがある！\nこれで奥のファイルも開けられそうだ。」
+CUTIN none
+RET
 
-LABEL finale
+LABEL kojiro_film
+CUTIN proc:item_microfilm
+ADD 3 1
+NAME 小次郎
+TEXT 「金庫からマイクロフィルムを発見した！\n実験データの記録が残っているぞ。」
+CUTIN none
+RET
+
+LABEL kojiro_radio
+NAME 小次郎
+TEXT 「小次郎だ。こちら側の調べは進んでいる。\nL+Xまたは選択肢でサイトを切り替えてくれ。」
+RET
+
+LABEL site_marina
+BG proc:cyber_lab
+BGM proc:ambient_tense
+CHAR right proc:rei_normal
+VOICE proc:voice_marina
+NAME まりな
+TEXT 「地下ラボへ潜入完了。小次郎さん、聞こえる？\n端末ロックを解除すれば合流できるわ！」
+
+CHOICE
+OPTION 【調べる】メイン端末を解析 | @call:marina_hack
+OPTION 【見る】ラボ内の監視カメラ | @call:marina_cam
+OPTION_IF 2 == 1 【通信】解除完了を報告 | @call:marina_report
+OPTION 【アイテム】極秘ファイル確認 | @call:marina_file
+OPTION 【サイト切替】小次郎側へ (L+X) | @site:0
+
+LABEL marina_hack
+CUTIN proc:item_microfilm
+SET 2 1
+ADD 3 1
+SHAKE 6.0 280
+SE proc:flash
+NAME まりな
+TEXT 「ハッキング完了！セキュリティが解除されたわ！\n小次郎さんのルートへ戻って突入しましょう！」
+CUTIN none
+RET
+
+LABEL marina_cam
+NAME まりな
+TEXT 「監視カメラの映像が乱れている。\n誰かが先ほどまでここにいたようね……。」
+RET
+
+LABEL marina_report
+NAME まりな
+TEXT 「セキュリティ解除は完了済みよ。\n小次郎サイトへ戻って突入コマンドを選んで！」
+RET
+
+LABEL marina_file
+CUTIN proc:item_file
+NAME まりな
+TEXT 「極秘資料を確認した。核心はすぐそこね。」
+CUTIN none
+RET
+
+LABEL finale_converge
 CLEAR_CHAR all
+CUTIN none
 BG proc:shrine_sunset
-CHAR center proc:sakura_smile
-IF 0 == 1 GOTO finale_vmu
-NAME サクラ
-TEXT 「よし、LAN監視しながらシナリオ開発を進めよう！\nDreamcastで専用ノベルゲーム、きっと作れるよ！」
+BGM proc:ambient_calm
+CHAR left proc:sakura_smile
+CHAR right proc:rei_smile
+IF_AND 1 == 1 2 == 1 GOTO finale_true
+NAME まりな
+TEXT 「合流成功ね！LAN監視とVMUセーブを駆使して、\n本格的なマルチサイトADVを作り上げましょう！」
 GOTO ending
 
-LABEL finale_vmu
-NAME サクラ
-TEXT 「セーブデータ管理もばっちりだね！\nDreamcastのVMUと一緒に物語を紡いでいこう！」
+LABEL finale_true
+NAME 小次郎＆まりな
+TEXT 「全サイト連動＆証拠品解析まで完全クリアだ！\nこれぞDreamcast専用EVEエンジン！」
 
 LABEL ending
 BGM stop

@@ -27,6 +27,9 @@ static struct {
     vn_tex_t         bg_tex;
     char             bg_name[64];
     vn_sprite_slot_t sprites[VN_MAX_SPRITES];
+    bool             has_cutin;
+    vn_tex_t         cutin_tex;
+    char             cutin_name[64];
 
     /* Fade overlay */
     uint32_t         fade_rgb;
@@ -86,6 +89,9 @@ void vn_gfx_shutdown(void) {
 
     vn_tex_free(&gfx_st.bg_tex);
     gfx_st.has_bg = false;
+    vn_tex_free(&gfx_st.cutin_tex);
+    gfx_st.has_cutin = false;
+    gfx_st.cutin_name[0] = '\0';
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         vn_tex_free(&gfx_st.sprites[i].tex);
         gfx_st.sprites[i].active = false;
@@ -459,6 +465,121 @@ int vn_char_set(vn_sprite_pos_t pos, const char *asset_spec) {
     return rc;
 }
 
+static int create_procedural_cutin(vn_tex_t *tex, const char *tag) {
+    const uint16_t w = 128U;
+    const uint16_t h = 128U;
+    size_t bytes = (size_t)w * (size_t)h * 2U;
+    uint16_t *pix = (uint16_t *)memalign(32, bytes);
+    if(!pix)
+        return -1;
+
+    int kind = 2; /* 0 = keycard, 1 = microfilm/disc, 2 = classified file */
+    if(tag && strstr(tag, "keycard") != NULL)
+        kind = 0;
+    else if(tag && strstr(tag, "microfilm") != NULL)
+        kind = 1;
+
+    for(uint16_t y = 0; y < h; y++) {
+        for(uint16_t x = 0; x < w; x++) {
+            uint16_t col = pack_argb4444(210, 12, 24, 48);
+
+            /* Outer tactical analyzer grid & frame */
+            if(x < 2 || x >= w - 2 || y < 2 || y >= h - 2) {
+                col = pack_argb4444(240, 80, 210, 248);
+            } else if((x % 16 == 0) || (y % 16 == 0)) {
+                col = pack_argb4444(210, 20, 44, 78);
+            }
+
+            if(kind == 0) {
+                /* Security keycard with IC chip & magnetic stripe */
+                if(x >= 16 && x <= 111 && y >= 34 && y <= 93) {
+                    col = pack_argb4444(255, 225, 232, 244);
+                    if(x == 16 || x == 111 || y == 34 || y == 93)
+                        col = pack_argb4444(255, 70, 190, 240);
+                    else if(y >= 42 && y <= 52)
+                        col = pack_argb4444(255, 24, 34, 56);
+                    else if(x >= 28 && x <= 48 && y >= 62 && y <= 78)
+                        col = pack_argb4444(255, 235, 185, 55);
+                    else if(x >= 60 && x <= 98 && (y == 66 || y == 74))
+                        col = pack_argb4444(255, 45, 130, 210);
+                }
+            } else if(kind == 1) {
+                /* Optical microfilm disc */
+                int32_t dx = (int32_t)x - 64;
+                int32_t dy = (int32_t)y - 64;
+                int32_t r2 = dx * dx + dy * dy;
+                if(r2 <= 42 * 42 && r2 >= 10 * 10) {
+                    col = ((x + y) & 8) ? pack_argb4444(255, 150, 220, 245)
+                                        : pack_argb4444(255, 210, 230, 248);
+                    if(r2 >= 39 * 39)
+                        col = pack_argb4444(255, 70, 200, 245);
+                } else if(r2 < 10 * 10 && r2 >= 4 * 4) {
+                    col = pack_argb4444(255, 240, 195, 70);
+                }
+            } else {
+                /* Classified dossier folder with red seal */
+                if(x >= 22 && x <= 105 && y >= 24 && y <= 103) {
+                    col = pack_argb4444(255, 236, 224, 188);
+                    if(y >= 24 && y <= 34 && x <= 62)
+                        col = pack_argb4444(255, 218, 192, 132);
+                    else if(x >= 34 && x <= 90 && (y == 48 || y == 58 || y == 68))
+                        col = pack_argb4444(255, 65, 75, 95);
+                    else if(x >= 68 && x <= 96 && y >= 78 && y <= 94)
+                        col = pack_argb4444(255, 210, 50, 55);
+                }
+            }
+
+            pix[(size_t)y * w + x] = col;
+        }
+    }
+
+    vn_tex_free(tex);
+    tex->vram_ptr = pvr_mem_malloc(bytes);
+    if(!tex->vram_ptr) {
+        free(pix);
+        return -1;
+    }
+
+    pvr_txr_load(pix, tex->vram_ptr, bytes);
+    free(pix);
+
+    tex->width = w;
+    tex->height = h;
+    tex->fmt = PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED;
+    return 0;
+}
+
+int vn_cutin_set(const char *asset_spec) {
+    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
+        vn_cutin_clear();
+        return 0;
+    }
+
+    int rc = -1;
+    if(strncmp(asset_spec, "proc:", 5) == 0) {
+        rc = create_procedural_cutin(&gfx_st.cutin_tex, asset_spec + 5);
+    } else {
+        rc = vn_tex_load_raw16(&gfx_st.cutin_tex, asset_spec, 128, 128,
+                               PVR_TXRFMT_ARGB4444 | PVR_TXRFMT_NONTWIDDLED);
+    }
+
+    if(rc == 0) {
+        gfx_st.has_cutin = true;
+        vn_copy_str(gfx_st.cutin_name, sizeof(gfx_st.cutin_name), asset_spec);
+    }
+    return rc;
+}
+
+void vn_cutin_clear(void) {
+    vn_tex_free(&gfx_st.cutin_tex);
+    gfx_st.has_cutin = false;
+    gfx_st.cutin_name[0] = '\0';
+}
+
+const char *vn_cutin_get_name(void) {
+    return gfx_st.cutin_name;
+}
+
 void vn_char_clear(vn_sprite_pos_t pos) {
     if((int)pos < 0 || (int)pos >= VN_MAX_SPRITES)
         return;
@@ -641,6 +762,14 @@ void vn_gfx_render_frame(void) {
         vn_gfx_draw_txr_quad(PVR_LIST_TR_POLY, &sp->tex,
                              px, py, sw, sh, 10.0f + (float)i * 0.1f,
                              0.0f, 0.0f, 1.0f, 1.0f, tint);
+    }
+
+    if(gfx_st.has_cutin) {
+        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 236.0f + sx, 52.0f + sy, 168.0f, 168.0f, 15.0f, 0xE058D0F8U);
+        vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 238.0f + sx, 54.0f + sy, 164.0f, 164.0f, 15.2f, 0xD80A1428U);
+        vn_gfx_draw_txr_quad(PVR_LIST_TR_POLY, &gfx_st.cutin_tex,
+                             244.0f + sx, 60.0f + sy, 152.0f, 152.0f, 15.5f,
+                             0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFU);
     }
 
     vn_text_render_to_pvr();

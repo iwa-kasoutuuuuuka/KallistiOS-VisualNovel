@@ -40,12 +40,15 @@ void        vn_text_set_window_visible(bool visible);
 bool        vn_text_is_window_visible(void);
 const char *vn_text_get_speaker(void);
 const char *vn_text_get_dialogue(void);
+void        vn_text_set_site_badge(const char *badge_sjis);
 
 /* Internal script hooks (kosvn_script.c) */
 int         vn_script_jump_line(uint32_t line);
 bool        vn_script_is_waiting_fx(void);
 void        vn_script_clear_wait_fx(void);
 bool        vn_script_is_ended(void);
+void        vn_script_export_state(vn_save_state_t *st);
+void        vn_script_import_state(const vn_save_state_t *st);
 
 /* Internal core/audio hooks (kosvn_core.c) */
 void        vn_audio_update(void);

@@ -57,6 +57,7 @@ static struct {
     FILE             *bgm_wav_fp;
     vn_sfx_entry_t    sfx_cache[VN_SFX_CACHE_MAX];
     int               sfx_cache_cnt;
+    int               voice_chan;
 } core_st;
 
 /* 32-entry signed sine wave table scaled to [-12000, +12000] */
@@ -183,28 +184,35 @@ void vn_audio_stop_bgm(void) {
     core_st.bgm_name[0] = '\0';
 }
 
-int vn_audio_play_se(const char *path_or_spec) {
+static sfxhnd_t load_or_cache_sfx(const char *path_or_spec) {
     if(!core_st.audio_ready || !path_or_spec || path_or_spec[0] == '\0')
-        return 0;
+        return SFXHND_INVALID;
 
     for(int i = 0; i < core_st.sfx_cache_cnt; i++) {
-        if(strcmp(core_st.sfx_cache[i].name, path_or_spec) == 0) {
-            snd_sfx_play(core_st.sfx_cache[i].hnd, 200, 128);
-            return 0;
-        }
+        if(strcmp(core_st.sfx_cache[i].name, path_or_spec) == 0)
+            return core_st.sfx_cache[i].hnd;
     }
 
     sfxhnd_t hnd = SFXHND_INVALID;
     if(strncmp(path_or_spec, "proc:", 5) == 0) {
         uint32_t samples = 3500U;
+        uint32_t freq = 880U;
+        if(strstr(path_or_spec, "voice_kojiro") != NULL) {
+            samples = 6000U;
+            freq = 520U;
+        } else if(strstr(path_or_spec, "voice_marina") != NULL) {
+            samples = 6000U;
+            freq = 740U;
+        } else if(strstr(path_or_spec, "select") != NULL) {
+            freq = 660U;
+        } else if(strstr(path_or_spec, "flash") != NULL) {
+            freq = 440U;
+        }
+
         size_t bytes = samples * 2U;
         int16_t *pcm = (int16_t *)memalign(32, bytes);
         if(!pcm)
-            return -1;
-
-        uint32_t freq = 880U;
-        if(strstr(path_or_spec, "select") != NULL) freq = 660U;
-        else if(strstr(path_or_spec, "flash") != NULL) freq = 440U;
+            return SFXHND_INVALID;
 
         for(uint32_t i = 0; i < samples; i++) {
             uint32_t idx = ((i * freq * 32U) / 22050U) & 31U;
@@ -219,7 +227,7 @@ int vn_audio_play_se(const char *path_or_spec) {
     }
 
     if(hnd == SFXHND_INVALID)
-        return -1;
+        return SFXHND_INVALID;
 
     if(core_st.sfx_cache_cnt >= VN_SFX_CACHE_MAX) {
         snd_sfx_unload(core_st.sfx_cache[0].hnd);
@@ -231,9 +239,38 @@ int vn_audio_play_se(const char *path_or_spec) {
     vn_sfx_entry_t *ent = &core_st.sfx_cache[core_st.sfx_cache_cnt++];
     vn_copy_str(ent->name, sizeof(ent->name), path_or_spec);
     ent->hnd = hnd;
+    return hnd;
+}
+
+int vn_audio_play_se(const char *path_or_spec) {
+    sfxhnd_t hnd = load_or_cache_sfx(path_or_spec);
+    if(hnd == SFXHND_INVALID)
+        return (core_st.audio_ready && path_or_spec && path_or_spec[0] != '\0') ? -1 : 0;
 
     snd_sfx_play(hnd, 200, 128);
     return 0;
+}
+
+void vn_audio_stop_voice(void) {
+    if(core_st.audio_ready && core_st.voice_chan >= 0) {
+        snd_sfx_stop(core_st.voice_chan);
+        core_st.voice_chan = -1;
+    }
+}
+
+int vn_audio_play_voice(const char *path_or_spec) {
+    vn_audio_stop_voice();
+    if(!core_st.audio_ready || !path_or_spec || path_or_spec[0] == '\0' ||
+       strcmp(path_or_spec, "none") == 0) {
+        return 0;
+    }
+
+    sfxhnd_t hnd = load_or_cache_sfx(path_or_spec);
+    if(hnd == SFXHND_INVALID)
+        return -1;
+
+    core_st.voice_chan = snd_sfx_play(hnd, 225, 128);
+    return (core_st.voice_chan >= 0) ? 0 : -1;
 }
 
 void vn_audio_update(void) {
@@ -248,6 +285,7 @@ int vn_init(const vn_config_t *cfg) {
 
     memset(&core_st, 0, sizeof(core_st));
     core_st.bgm_stream = SND_STREAM_INVALID;
+    core_st.voice_chan = -1;
 
     vn_copy_str(core_st.title, sizeof(core_st.title),
                 (cfg && cfg->title) ? cfg->title : "KallistiOS-VN");
@@ -285,6 +323,7 @@ void vn_shutdown(void) {
         return;
 
     vn_netdbg_log("Engine shutting down");
+    vn_audio_stop_voice();
     vn_audio_stop_bgm();
     if(core_st.bgm_chunk) {
         free(core_st.bgm_chunk);
@@ -318,9 +357,11 @@ static void handle_quick_save(void) {
     }
     vn_copy_str(st.speaker_name, sizeof(st.speaker_name), vn_text_get_speaker());
     vn_copy_str(st.bgm_name, sizeof(st.bgm_name), vn_audio_get_bgm_name());
+    vn_copy_str(st.cutin_name, sizeof(st.cutin_name), vn_cutin_get_name());
     for(int i = 0; i < VN_MAX_FLAGS; i++) {
         st.flags[i] = vn_script_get_flag(i);
     }
+    vn_script_export_state(&st);
 
     if(vn_vmu_save(0, &st) == 0) {
         vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SAVED VMU0]");
@@ -347,10 +388,14 @@ static void handle_quick_load(void) {
     vn_bg_set(st.bg_name);
     for(int i = 0; i < VN_MAX_SPRITES; i++)
         vn_char_set((vn_sprite_pos_t)i, st.char_names[i]);
+    vn_cutin_set(st.cutin_name);
     vn_text_set_speaker(st.speaker_name);
+    vn_audio_stop_voice();
     vn_audio_play_bgm(st.bgm_name);
 
+    vn_script_import_state(&st);
     vn_script_jump_line(st.script_line);
+    vn_text_clear_choices();
     vn_script_advance();
 
     vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[LOADED VMU0]");
@@ -405,11 +450,19 @@ int vn_step_frame(void) {
         }
     }
 
-    /* Quick Save / Quick Load via L-Trigger */
+    /* Quick Save / Quick Load / Multi-Sight Zap via L-Trigger */
     if(l_held && (pressed & CONT_A)) {
         handle_quick_save();
     } else if(l_held && (pressed & CONT_B)) {
         handle_quick_load();
+    } else if(l_held && (pressed & CONT_X) && vn_site_is_enabled()) {
+        vn_audio_stop_voice();
+        vn_audio_play_se("proc:select");
+        vn_text_clear_choices();
+        vn_site_switch(1 - vn_site_get_active());
+        vn_script_advance();
+        vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SITE SWITCH]");
+        core_st.notice_timer_ms = 1400U;
     } else if(pressed & CONT_Y) {
         vn_backlog_set_visible(!vn_backlog_is_visible());
     } else if(vn_backlog_is_visible()) {
@@ -435,10 +488,18 @@ int vn_step_frame(void) {
             } else if(pressed & CONT_A) {
                 int sel = vn_text_get_selected_choice();
                 const char *tgt = vn_text_get_choice_target(sel);
+                char target_buf[64];
+                vn_copy_str(target_buf, sizeof(target_buf), tgt);
+                vn_audio_stop_voice();
                 vn_audio_play_se("proc:chime");
                 vn_text_clear_choices();
-                if(tgt)
-                    vn_script_jump_label(tgt);
+                if(strncmp(target_buf, "@call:", 6) == 0) {
+                    vn_script_call_label(target_buf + 6);
+                } else if(strncmp(target_buf, "@site:", 6) == 0) {
+                    vn_site_switch(atoi(target_buf + 6));
+                } else if(target_buf[0] != '\0') {
+                    vn_script_jump_label(target_buf);
+                }
                 vn_script_advance();
             }
         } else if(vn_script_is_waiting_fx()) {
@@ -459,6 +520,7 @@ int vn_step_frame(void) {
                                    (core_st.auto_mode && core_st.auto_timer_ms >= core_st.auto_advance_ms);
                 if(advance_now) {
                     core_st.auto_timer_ms = 0;
+                    vn_audio_stop_voice();
                     vn_text_set_window_visible(true);
                     vn_backlog_push(vn_text_get_speaker(), vn_text_get_dialogue());
                     vn_script_advance();
@@ -475,6 +537,8 @@ int vn_step_frame(void) {
     char status[96];
     if(core_st.notice_msg[0] != '\0') {
         snprintf(status, sizeof(status), "%s  %s", mode_tag, core_st.notice_msg);
+    } else if(vn_site_is_enabled()) {
+        snprintf(status, sizeof(status), "%s | A:Next Y:Log L+X:Site R:Skip", mode_tag);
     } else {
         snprintf(status, sizeof(status), "%s | A:Next B:Hide X:Auto Y:Log R:Skip", mode_tag);
     }

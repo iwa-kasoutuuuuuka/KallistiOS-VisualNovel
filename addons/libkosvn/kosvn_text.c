@@ -55,6 +55,7 @@ static struct {
     int                backlog_scroll;
 
     char               status_line[96];
+    char               site_badge[48];
 } txt_st;
 
 static bool sjis_is_wide_lead(uint8_t c) {
@@ -186,6 +187,10 @@ static void rebuild_canvas(void) {
                 break;
         }
     } else if(txt_st.window_visible) {
+        if(txt_st.site_badge[0] != '\0') {
+            draw_sjis_block(416U, 17U, 204U, 44U, 0xF8FFU, txt_st.site_badge, 48U);
+        }
+
         if(txt_st.speaker[0] != '\0') {
             draw_sjis_block(36U, 289U, 216U, 316U, 0xFFD6U, txt_st.speaker, 64U);
         }
@@ -195,13 +200,15 @@ static void rebuild_canvas(void) {
         }
 
         if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
-            uint32_t cy = 110U;
+            uint32_t cy = (txt_st.choice_count > 4) ? 48U : 100U;
+            uint32_t cy_step = (txt_st.choice_count > 4) ? 38U : 44U;
+            uint32_t txt_off = (txt_st.choice_count > 4) ? 4U : 6U;
             for(int i = 0; i < txt_st.choice_count; i++) {
                 uint16_t col = (i == txt_st.choice_selected) ? 0xFFD4U : 0xFEEFU;
                 if(i == txt_st.choice_selected)
-                    draw_sjis_block(74U, cy + 6U, 24U, cy + 34U, 0xFFD4U, ">", 4U);
-                draw_sjis_block(96U, cy + 6U, 472U, cy + 34U, col, txt_st.choices[i].label, 128U);
-                cy += 44U;
+                    draw_sjis_block(74U, cy + txt_off, 24U, cy + txt_off + 26U, 0xFFD4U, ">", 4U);
+                draw_sjis_block(96U, cy + txt_off, 472U, cy + txt_off + 26U, col, txt_st.choices[i].label, 128U);
+                cy += cy_step;
             }
         }
     }
@@ -404,6 +411,14 @@ void vn_text_set_status_overlay(const char *status_line) {
         txt_st.dirty = true;
 }
 
+void vn_text_set_site_badge(const char *badge_sjis) {
+    char prev[48];
+    vn_copy_str(prev, sizeof(prev), txt_st.site_badge);
+    vn_copy_str(txt_st.site_badge, sizeof(txt_st.site_badge), badge_sjis);
+    if(strcmp(prev, txt_st.site_badge) != 0)
+        txt_st.dirty = true;
+}
+
 void vn_text_render_to_pvr(void) {
     if(!txt_st.initialized)
         return;
@@ -417,6 +432,11 @@ void vn_text_render_to_pvr(void) {
     if(txt_st.backlog_visible) {
         vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 20.0f, 20.0f, 600.0f, 426.0f, 20.0f, 0xDF0B1222U);
     } else if(txt_st.window_visible) {
+        /* Multi-Sight HUD badge */
+        if(txt_st.site_badge[0] != '\0') {
+            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 404.0f + sx, 12.0f + sy, 224.0f, 34.0f, 20.0f, 0xE048B8E8U);
+            vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 406.0f + sx, 14.0f + sy, 220.0f, 30.0f, 20.5f, 0xD8102038U);
+        }
         /* Speaker badge */
         if(txt_st.speaker[0] != '\0') {
             vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 24.0f + sx, 284.0f + sy, 240.0f, 34.0f, 20.0f, 0xE03A70B8U);
@@ -428,13 +448,15 @@ void vn_text_render_to_pvr(void) {
 
         /* Choice cards */
         if(txt_st.choice_count > 0 && txt_st.visible_chars >= txt_st.total_chars) {
-            float cy = 110.0f;
+            float cy = (txt_st.choice_count > 4) ? 48.0f : 100.0f;
+            float cy_step = (txt_st.choice_count > 4) ? 38.0f : 44.0f;
+            float card_h = (txt_st.choice_count > 4) ? 32.0f : 36.0f;
             for(int i = 0; i < txt_st.choice_count; i++) {
                 uint32_t border = (i == txt_st.choice_selected) ? 0xFFF2C94CU : 0xD05888C8U;
                 uint32_t fill   = (i == txt_st.choice_selected) ? 0xE0253A68U : 0xCC121E38U;
-                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 60.0f, cy, 520.0f, 36.0f, 21.0f, border);
-                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 62.0f, cy + 2.0f, 516.0f, 32.0f, 21.5f, fill);
-                cy += 44.0f;
+                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 60.0f, cy, 520.0f, card_h, 21.0f, border);
+                vn_gfx_draw_col_quad(PVR_LIST_TR_POLY, 62.0f, cy + 2.0f, 516.0f, card_h - 4.0f, 21.5f, fill);
+                cy += cy_step;
             }
         }
     }
