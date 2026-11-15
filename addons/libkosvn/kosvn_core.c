@@ -456,13 +456,19 @@ int vn_step_frame(void) {
     } else if(l_held && (pressed & CONT_B)) {
         handle_quick_load();
     } else if(l_held && (pressed & CONT_X) && vn_site_is_enabled()) {
-        vn_audio_stop_voice();
-        vn_audio_play_se("proc:select");
-        vn_text_clear_choices();
-        vn_site_switch(1 - vn_site_get_active());
-        vn_script_advance();
-        vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SITE SWITCH]");
-        core_st.notice_timer_ms = 1400U;
+        if(vn_site_is_locked(vn_site_get_active())) {
+            vn_audio_play_se("proc:select");
+            vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SITE LOCKED]");
+            core_st.notice_timer_ms = 1400U;
+        } else {
+            vn_audio_stop_voice();
+            vn_audio_play_se("proc:select");
+            vn_text_clear_choices();
+            vn_site_switch(1 - vn_site_get_active());
+            vn_script_advance();
+            vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SITE SWITCH]");
+            core_st.notice_timer_ms = 1400U;
+        }
     } else if(pressed & CONT_Y) {
         vn_backlog_set_visible(!vn_backlog_is_visible());
     } else if(vn_backlog_is_visible()) {
@@ -490,17 +496,23 @@ int vn_step_frame(void) {
                 const char *tgt = vn_text_get_choice_target(sel);
                 char target_buf[64];
                 vn_copy_str(target_buf, sizeof(target_buf), tgt);
-                vn_audio_stop_voice();
-                vn_audio_play_se("proc:chime");
-                vn_text_clear_choices();
-                if(strncmp(target_buf, "@call:", 6) == 0) {
-                    vn_script_call_label(target_buf + 6);
-                } else if(strncmp(target_buf, "@site:", 6) == 0) {
-                    vn_site_switch(atoi(target_buf + 6));
-                } else if(target_buf[0] != '\0') {
-                    vn_script_jump_label(target_buf);
+                if(strncmp(target_buf, "@site:", 6) == 0 && vn_site_is_locked(vn_site_get_active())) {
+                    vn_audio_play_se("proc:select");
+                    vn_copy_str(core_st.notice_msg, sizeof(core_st.notice_msg), "[SITE LOCKED]");
+                    core_st.notice_timer_ms = 1400U;
+                } else {
+                    vn_audio_stop_voice();
+                    vn_audio_play_se("proc:chime");
+                    vn_text_clear_choices();
+                    if(strncmp(target_buf, "@call:", 6) == 0) {
+                        vn_script_call_label(target_buf + 6);
+                    } else if(strncmp(target_buf, "@site:", 6) == 0) {
+                        vn_site_switch(atoi(target_buf + 6));
+                    } else if(target_buf[0] != '\0') {
+                        vn_script_jump_label(target_buf);
+                    }
+                    vn_script_advance();
                 }
-                vn_script_advance();
             }
         } else if(vn_script_is_waiting_fx()) {
             if(!vn_fx_is_busy() || skip_active || (pressed & CONT_A)) {

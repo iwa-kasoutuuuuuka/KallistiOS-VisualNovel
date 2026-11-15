@@ -14,7 +14,7 @@
 #include "kosvn_internal.h"
 
 #define VN_TEX_CACHE_MAX 16
-#define VN_HDR_CACHE_MAX 8
+#define VN_HDR_CACHE_MAX 16
 
 typedef enum vn_tex_kind {
     VN_TEX_KIND_BG    = 0,
@@ -63,6 +63,7 @@ static struct {
     pvr_poly_hdr_t       col_hdr_op __attribute__((aligned(32)));
     pvr_poly_hdr_t       col_hdr_tr __attribute__((aligned(32)));
     vn_hdr_cache_entry_t hdr_cache[VN_HDR_CACHE_MAX];
+    uint32_t             hdr_cache_next;
 
     /* Fade overlay */
     uint32_t             fade_rgb;
@@ -877,9 +878,17 @@ void vn_gfx_draw_txr_quad(pvr_list_t list, const vn_tex_t *tex, float x, float y
     if(!tex || !tex->vram_ptr)
         return;
 
-    vn_hdr_cache_entry_t *he = &gfx_st.hdr_cache[((uintptr_t)tex->vram_ptr >> 5) & (VN_HDR_CACHE_MAX - 1)];
-    if(he->vram_ptr != tex->vram_ptr || he->list != list ||
-       he->fmt != tex->fmt || he->width != tex->width || he->height != tex->height) {
+    vn_hdr_cache_entry_t *he = NULL;
+    for(int i = 0; i < VN_HDR_CACHE_MAX; i++) {
+        vn_hdr_cache_entry_t *cand = &gfx_st.hdr_cache[i];
+        if(cand->vram_ptr == tex->vram_ptr && cand->list == list &&
+           cand->fmt == tex->fmt && cand->width == tex->width && cand->height == tex->height) {
+            he = cand;
+            break;
+        }
+    }
+    if(!he) {
+        he = &gfx_st.hdr_cache[gfx_st.hdr_cache_next++ & (VN_HDR_CACHE_MAX - 1)];
         pvr_poly_cxt_t cxt;
         pvr_poly_cxt_txr(&cxt, list, tex->fmt, tex->width, tex->height, tex->vram_ptr, PVR_FILTER_BILINEAR);
         cxt.gen.culling = PVR_CULLING_NONE;

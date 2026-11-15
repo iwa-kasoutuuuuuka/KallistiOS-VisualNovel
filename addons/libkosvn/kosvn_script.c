@@ -36,6 +36,7 @@ static struct {
     int              active_site;
     vn_site_save_t   sites[VN_MAX_SITES];
     char             site_start_labels[VN_MAX_SITES][64];
+    char             site_dialogues[VN_MAX_SITES][512];
 } vm_st;
 
 static inline uint32_t fnv1a_hash(const char *s) {
@@ -97,6 +98,11 @@ static void save_site_snapshot(vn_site_save_t *dst) {
     vn_copy_str(dst->cutin_name, sizeof(dst->cutin_name), vn_cutin_get_name());
     vn_copy_str(dst->speaker_name, sizeof(dst->speaker_name), vn_text_get_speaker());
     vn_copy_str(dst->bgm_name, sizeof(dst->bgm_name), vn_audio_get_bgm_name());
+    if(vm_st.active_site >= 0 && vm_st.active_site < VN_MAX_SITES) {
+        vn_copy_str(vm_st.site_dialogues[vm_st.active_site],
+                    sizeof(vm_st.site_dialogues[vm_st.active_site]),
+                    vn_text_get_dialogue());
+    }
 }
 
 static char *trim_ascii(char *s) {
@@ -197,6 +203,7 @@ void vn_script_unload(void) {
     vm_st.active_site = 0;
     memset(vm_st.sites, 0, sizeof(vm_st.sites));
     memset(vm_st.site_start_labels, 0, sizeof(vm_st.site_start_labels));
+    memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     vm_st.ended = true;
     vm_st.waiting_fx = false;
     vm_st.path[0] = '\0';
@@ -287,6 +294,7 @@ int vn_script_load(const char *path) {
     vm_st.active_site = 0;
     memset(vm_st.sites, 0, sizeof(vm_st.sites));
     memset(vm_st.site_start_labels, 0, sizeof(vm_st.site_start_labels));
+    memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     vm_st.ended = false;
     vm_st.waiting_fx = false;
     vn_copy_str(vm_st.path, sizeof(vm_st.path), path);
@@ -308,6 +316,31 @@ int vn_script_jump_label(const char *label) {
     return -1;
 }
 
+static void restore_choice_prompt_before(uint32_t line) {
+    if(line >= vm_st.line_count || !vm_st.lines)
+        return;
+    char cmd[32];
+    split_cmd(vm_st.lines[line], cmd, sizeof(cmd));
+    if(strcmp(cmd, "CHOICE") != 0)
+        return;
+
+    for(int32_t i = (int32_t)line - 1; i >= 0; i--) {
+        const char *ln = vm_st.lines[i];
+        if(ln[0] == '\0' || ln[0] == '#')
+            continue;
+        char prev_cmd[32];
+        const char *prev_arg = split_cmd(ln, prev_cmd, sizeof(prev_cmd));
+        if(strcmp(prev_cmd, "TEXT") == 0) {
+            char text_buf[512];
+            unescape_newlines(text_buf, sizeof(text_buf), prev_arg);
+            vn_text_set_dialogue(text_buf);
+            return;
+        }
+        if(strcmp(prev_cmd, "LABEL") == 0)
+            break;
+    }
+}
+
 int vn_script_jump_line(uint32_t line) {
     if(line >= vm_st.line_count)
         return -1;
@@ -315,6 +348,7 @@ int vn_script_jump_line(uint32_t line) {
     vm_st.cur_cmd_line = line;
     vm_st.ended = false;
     vm_st.waiting_fx = false;
+    restore_choice_prompt_before(line);
     return 0;
 }
 
@@ -394,6 +428,11 @@ int vn_site_switch(int site_id) {
             vm_st.call_stack[i] = dst->call_stack[i];
         if(dst->script_line < vm_st.line_count)
             vm_st.pc = dst->script_line;
+        if(vm_st.site_dialogues[site_id][0] != '\0') {
+            vn_text_set_dialogue(vm_st.site_dialogues[site_id]);
+        } else if(dst->script_line < vm_st.line_count) {
+            restore_choice_prompt_before(dst->script_line);
+        }
         vm_st.ended = false;
         vm_st.waiting_fx = false;
     } else {

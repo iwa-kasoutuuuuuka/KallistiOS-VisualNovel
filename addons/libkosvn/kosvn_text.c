@@ -208,8 +208,10 @@ static void draw_dialogue_incremental(size_t target_chars, uint32_t *y_min_out, 
             txt_st.dlg_y += TEXT_LINE_STEP;
         }
 
-        if(txt_st.dlg_y + BFONT_HEIGHT + 1U > max_y || txt_st.dlg_x + glyph_w + 1U > TEXT_TEX_W)
+        if(txt_st.dlg_y + BFONT_HEIGHT + 1U > max_y || txt_st.dlg_x + glyph_w + 1U > TEXT_TEX_W) {
+            txt_st.dlg_drawn_chars = target_chars;
             break;
+        }
 
         if(txt_st.dlg_y < y_min)
             y_min = txt_st.dlg_y;
