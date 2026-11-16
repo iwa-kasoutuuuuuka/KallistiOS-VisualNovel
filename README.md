@@ -1,5 +1,6 @@
 <!-- PROJECT LOGO -->
 <div align="center">
+  <img src="doc/images/kosvn_logo.png" alt="KallistiOS-VisualNovel Logo" width="180" />
   <h1 align="center"><strong>KallistiOS-VisualNovel (KallistiOS-VN)</strong></h1>
   <p align="center">
     <strong>KallistiOS ノベルゲーム特化版</strong> — セガ・ドリームキャスト（Dreamcast）向け ノベルゲーム専用 OS &amp; C言語エンジン層 (<code>libkosvn</code>)
