@@ -490,6 +490,7 @@ void vn_script_import_state(const vn_save_state_t *st) {
         vm_st.call_stack[i] = st->call_stack[i];
     for(int i = 0; i < VN_MAX_SITES; i++)
         vm_st.sites[i] = st->sites[i];
+    memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     update_site_hud();
 }
 

@@ -892,6 +892,7 @@ void vn_gfx_draw_txr_quad(pvr_list_t list, const vn_tex_t *tex, float x, float y
         pvr_poly_cxt_t cxt;
         pvr_poly_cxt_txr(&cxt, list, tex->fmt, tex->width, tex->height, tex->vram_ptr, PVR_FILTER_BILINEAR);
         cxt.gen.culling = PVR_CULLING_NONE;
+        cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
         pvr_poly_compile(&he->hdr, &cxt);
         he->vram_ptr = tex->vram_ptr;
         he->list = list;
