@@ -166,6 +166,38 @@ void vn_gfx_shutdown(void) {
     gfx_st.initialized = false;
 }
 
+/* Textures freed while the PVR may still be drawing the previous frame with
+   them: keep the VRAM for a few frames before it can be reused. Reusing it at
+   once (free, then load the next picture into the same address) froze real
+   hardware when a picture was replaced right after it was drawn. */
+#define VN_TEX_GRAVE 32
+static struct { pvr_ptr_t ptr; int frames; } tex_grave[VN_TEX_GRAVE];
+
+void vn_tex_free_later(vn_tex_t *tex) {
+    if(!tex || !tex->vram_ptr)
+        return;
+    invalidate_hdr_cache_for(tex->vram_ptr);
+    int i;
+    for(i = 0; i < VN_TEX_GRAVE && tex_grave[i].ptr; i++)
+        ;
+    if(i < VN_TEX_GRAVE) {
+        tex_grave[i].ptr = tex->vram_ptr;
+        tex_grave[i].frames = 3;
+    } else {
+        pvr_wait_ready();             /* full: wait for the render, then free */
+        pvr_mem_free(tex->vram_ptr);
+    }
+    tex->vram_ptr = NULL;
+}
+
+static void tex_grave_tick(void) {
+    for(int i = 0; i < VN_TEX_GRAVE; i++)
+        if(tex_grave[i].ptr && --tex_grave[i].frames <= 0) {
+            pvr_mem_free(tex_grave[i].ptr);
+            tex_grave[i].ptr = NULL;
+        }
+}
+
 void vn_tex_free(vn_tex_t *tex) {
     if(!tex)
         return;
@@ -589,7 +621,7 @@ static bool evict_lru_cached_tex(void) {
     if(best_idx < 0)
         return false;
 
-    vn_tex_free(&gfx_st.tex_cache[best_idx].tex);
+    vn_tex_free_later(&gfx_st.tex_cache[best_idx].tex);   /* may still be in the frame being drawn */
     gfx_st.tex_cache[best_idx].in_use = false;
     gfx_st.tex_cache[best_idx].spec[0] = '\0';
     return true;
@@ -1128,4 +1160,5 @@ void vn_gfx_render_frame(void) {
     pvr_list_finish();
 
     pvr_scene_finish();
+    tex_grave_tick();
 }

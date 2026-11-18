@@ -115,9 +115,9 @@ static uint32_t next_blink_ms(void) {
 
 static void ov_free(vn_overlay_t *o) {
     if(o->active && o->mode != OV_TRACK)
-        vn_tex_free(&o->tex);
+        vn_tex_free_later(&o->tex);
     for(int k = 0; k < o->trk_nimg; k++)
-        vn_tex_free(&o->trk_img[k]);
+        vn_tex_free_later(&o->trk_img[k]);
     free(o->trk);
     memset(o, 0, sizeof(*o));
 }

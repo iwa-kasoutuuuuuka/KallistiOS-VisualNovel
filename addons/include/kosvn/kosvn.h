@@ -129,6 +129,7 @@ int  vn_tex_load_raw16(vn_tex_t *tex, const char *path, uint16_t w, uint16_t h, 
 int  vn_tex_create_procedural_bg(vn_tex_t *tex, uint16_t w, uint16_t h, int style_id);
 int  vn_tex_create_procedural_portrait(vn_tex_t *tex, uint16_t w, uint16_t h, int char_id, int expr_id);
 void vn_tex_free(vn_tex_t *tex);
+void vn_tex_free_later(vn_tex_t *tex);  /* free after the PVR is done with it */
 int  vn_bg_set(const char *asset_spec);
 int  vn_bg_crossfade(const char *asset_spec);   /* "<path> <ms>" */
 int  vn_char_set(vn_sprite_pos_t pos, const char *asset_spec);

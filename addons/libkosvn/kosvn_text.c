@@ -557,9 +557,9 @@ const char *vn_text_get_choice_cancel(void) { return txt_st.choice_cancel; }
 
 static void map_free(void) {
     if(txt_st.map_loaded)
-        vn_tex_free(&txt_st.map_tex);
+        vn_tex_free_later(&txt_st.map_tex);
     if(txt_st.pawn_loaded)
-        vn_tex_free(&txt_st.pawn_tex);
+        vn_tex_free_later(&txt_st.pawn_tex);
     txt_st.map_loaded = txt_st.pawn_loaded = false;
     txt_st.map_path[0] = txt_st.pawn_path[0] = '\0';
 }
