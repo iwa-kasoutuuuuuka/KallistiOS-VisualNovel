@@ -23,7 +23,8 @@
 8. [実機／エミュレータでのコントローラ操作一覧](#8-実機エミュレータでのコントローラ操作一覧)
 9. [LAN デバッグ &amp; UDP テレメトリの使い方](#9-lan-デバッグ--udp-テレメトリの使い方)
 10. [主要 C API リファレンス (`kosvn.h`)](#10-主要-c-api-リファレンス-kosvnh)
-11. [Upstream KallistiOS Overview &amp; License（本家概要・ライセンス 和文併記）](#upstream-kallistios-overview--license)
+11. [実機で分かった注意点（エミュレータでは起きないもの）](#11-実機で分かった注意点エミュレータでは起きないもの)
+12. [Upstream KallistiOS Overview &amp; License（本家概要・ライセンス 和文併記）](#upstream-kallistios-overview--license)
 
 ---
 
@@ -444,12 +445,33 @@ while True:
 シナリオ駆動だけでなく、独自のミニゲームや演出を C言語から直接制御したい場合は以下の関数群を利用できます。
 
 * **ライフサイクル:** `vn_init()`, `vn_shutdown()`, `vn_run_script()`, `vn_step_frame()`
-* **グラフィックス / 演出:** `vn_bg_set()`, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_cutin_set()`, `vn_cutin_clear()`, `vn_fx_fade()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`
+* **グラフィックス / 演出:** `vn_bg_set()`, `vn_bg_crossfade()`（`"<パス> <ミリ秒>"` でクロスフェード）, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_cutin_set()`, `vn_cutin_clear()`, `vn_fx_fade()`, `vn_fx_reset()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`, `vn_tex_free_later()`（描画中かもしれないテクスチャを数フレーム後に解放）
+* **データの場所:** `vn_set_path_remap()`（例: dcload-ip から起動したときだけ `/cd/` を `/pc/...` に読み替える）, `vn_resolve_path()`
+* **並行する話:** 台本の `STORY_DEF` / `STORY` / `STORY_LOCAL_BITS` で設定（C から呼ぶ API はありません）
+* **テスト:** `vn_config_t.autoplay`（スキップしながら選択肢を自動で選ぶ）, `autoplay_slow`（スキップせず声・効果音・演出を流す）, `autoplay_switch_every`
 * **テキスト / 選択肢 / 履歴:** `vn_text_set_speaker()`, `vn_text_set_dialogue()`, `vn_text_add_choice()`, `vn_backlog_push()`, `vn_backlog_set_visible()`
 * **スクリプト VM & Multi-Sight:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_call_label()`, `vn_script_return()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`, `vn_script_add_flag()`, `vn_site_init()`, `vn_site_switch()`, `vn_site_get_active()`, `vn_site_is_enabled()`, `vn_site_set_locked()`, `vn_site_is_locked()`
 * **VMU:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_draw_logo()`, `vn_vmu_set_icon()`（セーブファイルのアイコン 32x32・16 色）, `vn_vmu_set_desc()`（ファイル管理画面に出る名前）
 * **サウンド:** `vn_audio_play_bgm()`, `vn_audio_stop_bgm()`, `vn_audio_play_se()`, `vn_audio_play_voice()`, `vn_audio_stop_voice()`
 * **LAN デバッグ:** `vn_netdbg_init()`, `vn_netdbg_log()`, `vn_netdbg_send_telemetry()`
+
+---
+
+## 11. 実機で分かった注意点（エミュレータでは起きないもの）
+
+PS 版アドベンチャーの移植を実機（Broadband Adapter 経由の dcload-ip）で確かめて見つかったものです。Flycast ではどれも起きないので、音と描画の変更は必ず実機でも確かめてください。
+
+| 症状（実機だけ） | 原因 | libkosvn の対処 |
+|---|---|---|
+| 声の頭 0.2 秒をくり返す | KOS の `snd_stream_poll` は 2048 バイト単位で、しかもバッファの半分以上空いたときしかデータを頼まない。ADPCM のバッファが 2 KB だと一度も補充されず、AICA が最初の部分を回り続ける | 声・効果音のストリームは 8 KB |
+| 声の終わりの音をくり返す | コールバックが NULL / 0 を返すと、KOS は書き込み位置を進めず、古いバッファがもう一度鳴る | 最後とその後は、無音（PCM は 0、AICA ADPCM は 0x80）で埋めた満杯のバッファを返す |
+| `snd_stream_poll: chan0(0).pos = 65340` などの警告、音の乱れ | AICA チャンネルコマンドのスタック上バッファが未初期化 | `AICA_CMDSTR_CHANNEL` の直後に `memset`（kernel の snd_stream.c / snd_sfxmgr.c）。開始後 2 フレームは poll しない |
+| 絵をすばやく差し替えると画面が完全に固まる | 前のフレームを PVR が描いている最中に、そのテクスチャの VRAM を解放して次の絵を同じ場所に読み込んでいた | 差し替えた重ね絵・地図・背景キャッシュのテクスチャは `vn_tex_free_later()` で 3 フレーム後に解放 |
+
+調べ方のこつ:
+- 5 秒ごとなどに状態を `dbglog` で出す（例: 声のストリームが鳴っているはずの長さを過ぎても「再生中」のまま = データが消費されていない。ログが途切れた = 本体が固まった）。
+- dcload-ip で動かすときは、PC 側の dc-tool-ip を 1 つだけにする。前の dc-tool-ip が残っていると、次の起動はそれが終わるのを待ち続ける。
+- 声・効果音・演出を実際に流して確かめるには `autoplay_slow`、分岐を広く通すには `autoplay`（選んだ回数の少ない選択肢を優先する）を使う。
 
 ---
 
