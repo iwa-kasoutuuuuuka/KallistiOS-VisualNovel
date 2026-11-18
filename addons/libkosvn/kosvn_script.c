@@ -27,9 +27,11 @@ static struct {
     uint32_t         cur_cmd_line;
     bool             ended;
     bool             waiting_fx;
+    uint32_t         wait_ms;      /* >0: WAIT timer, otherwise WAIT_FX */
     vn_label_entry_t labels[VN_MAX_LABELS];
     int              label_count;
     int32_t          flags[VN_MAX_FLAGS];
+    uint32_t         bits[VN_MAX_BITS / 32]; /* survive script loads (JUMP) */
     uint32_t         call_stack[VN_MAX_CALL_DEPTH];
     int              call_depth;
     bool             multi_sight_enabled;
@@ -139,6 +141,12 @@ static void add_parsed_option(const char *arg_str) {
     *sep = '\0';
     char *lbl = trim_ascii(opt_copy);
     char *tgt = trim_ascii(sep + 1);
+    /* map place: "@dot_x,dot_y,pawn_x,pawn_y,rank label" */
+    int dx, dy, px, py, rk, used = 0;
+    if(lbl[0] == '@' && sscanf(lbl + 1, "%d,%d,%d,%d,%d %n", &dx, &dy, &px, &py, &rk, &used) == 5 && used > 0) {
+        vn_text_add_choice_at(lbl + 1 + used, tgt, dx, dy, px, py, rk);
+        return;
+    }
     vn_text_add_choice(lbl, tgt);
 }
 
@@ -206,17 +214,19 @@ void vn_script_unload(void) {
     memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     vm_st.ended = true;
     vm_st.waiting_fx = false;
+    vm_st.wait_ms = 0U;
     vm_st.path[0] = '\0';
     vn_text_set_site_badge("");
 }
 
 int vn_script_load(const char *path) {
+    dbglog(DBG_INFO, "kosvn_script: load '%s'\n", path ? path : "(null)");
     if(!path)
         return -1;
 
     vn_script_unload();
 
-    FILE *fp = fopen(path, "rb");
+    FILE *fp = vn_fopen(path, "rb");
     if(!fp) {
         dbglog(DBG_ERROR, "kosvn_script: cannot open '%s'\n", path);
         return -1;
@@ -271,7 +281,10 @@ int vn_script_load(const char *path) {
 
         char cmd[32];
         const char *arg = split_cmd(arr[idx], cmd, sizeof(cmd));
-        if(strcmp(cmd, "LABEL") == 0 && arg[0] != '\0' && vm_st.label_count < VN_MAX_LABELS) {
+        if(strcmp(cmd, "LABEL") == 0 && arg[0] != '\0' && vm_st.label_count >= VN_MAX_LABELS) {
+            dbglog(DBG_ERROR, "kosvn_script: '%s' has more than %d labels, '%s' dropped\n",
+                   path, VN_MAX_LABELS, arg);
+        } else if(strcmp(cmd, "LABEL") == 0 && arg[0] != '\0') {
             vn_label_entry_t *le = &vm_st.labels[vm_st.label_count++];
             vn_copy_str(le->name, sizeof(le->name), arg);
             le->line_idx = idx;
@@ -297,6 +310,7 @@ int vn_script_load(const char *path) {
     memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     vm_st.ended = false;
     vm_st.waiting_fx = false;
+    vm_st.wait_ms = 0U;
     vn_copy_str(vm_st.path, sizeof(vm_st.path), path);
     vn_text_set_site_badge("");
     return 0;
@@ -348,6 +362,7 @@ int vn_script_jump_line(uint32_t line) {
     vm_st.cur_cmd_line = line;
     vm_st.ended = false;
     vm_st.waiting_fx = false;
+    vm_st.wait_ms = 0U;
     restore_choice_prompt_before(line);
     return 0;
 }
@@ -366,6 +381,41 @@ int32_t vn_script_get_flag(int idx) {
 void vn_script_add_flag(int idx, int32_t delta) {
     if(idx >= 0 && idx < VN_MAX_FLAGS)
         vm_st.flags[idx] += delta;
+}
+
+static vn_movie_handler_t movie_handler;
+
+void vn_set_movie_handler(vn_movie_handler_t fn) {
+    movie_handler = fn;
+}
+
+void vn_script_set_bit(int idx, bool on) {
+    if(idx < 0 || idx >= VN_MAX_BITS)
+        return;
+    if(on)
+        vm_st.bits[idx >> 5] |= (1U << (idx & 31));
+    else
+        vm_st.bits[idx >> 5] &= ~(1U << (idx & 31));
+}
+
+bool vn_script_get_bit(int idx) {
+    if(idx < 0 || idx >= VN_MAX_BITS)
+        return false;
+    return (vm_st.bits[idx >> 5] >> (idx & 31)) & 1U;
+}
+
+/* Called once per frame while the VM is blocked on WAIT / WAIT_FX.
+   Returns true when the wait is over. */
+bool vn_script_tick_wait(uint32_t dt_ms) {
+    if(vm_st.wait_ms > 0U) {
+        if(vm_st.wait_ms <= dt_ms) {
+            vm_st.wait_ms = 0U;
+            return true;
+        }
+        vm_st.wait_ms -= dt_ms;
+        return false;
+    }
+    return !vn_fx_is_busy();
 }
 
 int vn_script_call_label(const char *label) {
@@ -435,6 +485,7 @@ int vn_site_switch(int site_id) {
         }
         vm_st.ended = false;
         vm_st.waiting_fx = false;
+        vm_st.wait_ms = 0U;
     } else {
         dst->initialized = 1U;
         vm_st.call_depth = 0;
@@ -497,8 +548,58 @@ void vn_script_import_state(const vn_save_state_t *st) {
 uint32_t vn_script_get_line(void) { return vm_st.cur_cmd_line; }
 const char *vn_script_get_path(void) { return vm_st.path; }
 bool vn_script_is_waiting_fx(void) { return vm_st.waiting_fx; }
-void vn_script_clear_wait_fx(void) { vm_st.waiting_fx = false; }
+void vn_script_clear_wait_fx(void) { vm_st.waiting_fx = false; vm_st.wait_ms = 0U; }
 bool vn_script_is_ended(void) { return vm_st.ended; }
+
+/* After a load or story switch: rebuild what the screen showed at <line>
+   (the BG and the overlays / speaker set after it), without running anything
+   else. The BG from an earlier script is restored by the caller. */
+void vn_script_replay_scene(uint32_t line) {
+    if(line > vm_st.line_count)
+        line = vm_st.line_count;
+    uint32_t from = 0U;
+    for(uint32_t i = line; i > 0U; i--) {
+        char cmd[32];
+        split_cmd(vm_st.lines[i - 1U], cmd, sizeof(cmd));
+        if(strcmp(cmd, "BG") == 0) {
+            from = i - 1U;
+            break;
+        }
+    }
+    for(uint32_t i = from; i < line; i++) {
+        char cmd[32];
+        const char *arg = split_cmd(vm_st.lines[i], cmd, sizeof(cmd));
+        if(strcmp(cmd, "BG") == 0) {
+            vn_overlay_clear_all();
+            vn_bg_set(arg);
+        } else if(strcmp(cmd, "OVERLAY") == 0) {
+            vn_overlay_command(arg);
+        } else if(strcmp(cmd, "OVERLAY_TRACK") == 0) {
+            vn_overlay_track(arg);
+        } else if(strcmp(cmd, "OVERLAY_CLEAR") == 0) {
+            if(arg[0] >= '0' && arg[0] <= '9')
+                vn_overlay_clear(atoi(arg));
+            else
+                vn_overlay_clear_all();
+        } else if(strcmp(cmd, "NAME") == 0) {
+            vn_text_set_speaker(strcmp(arg, "none") == 0 ? "" : arg);
+        } else if(strcmp(cmd, "TEXTBOX") == 0) {
+            vn_text_set_box_visible(strcmp(arg, "off") != 0);
+        }
+    }
+    /* TEXT_AREA is set once at the top of a script */
+    for(uint32_t i = 0; i < line && i < 4U; i++) {
+        char cmd[32];
+        const char *arg = split_cmd(vm_st.lines[i], cmd, sizeof(cmd));
+        if(strcmp(cmd, "TEXT_AREA") != 0)
+            continue;
+        unsigned x = 0, y = 0, w = 0;
+        if(sscanf(arg, "%u %u %u", &x, &y, &w) == 3)
+            vn_text_set_area(x, y, w);
+        else
+            vn_text_set_area(0, 0, 0);
+    }
+}
 
 int vn_script_advance(void) {
     while(vm_st.pc < vm_st.line_count) {
@@ -513,7 +614,21 @@ int vn_script_advance(void) {
         if(strcmp(cmd, "LABEL") == 0) {
             continue;
         } else if(strcmp(cmd, "BG") == 0) {
-            vn_bg_set(arg);
+            /* BG <path> [ms] : ms = crossfade (PS \d 2), cut while skipping */
+            vn_overlay_clear_all();
+            if(vn_core_is_skipping())
+                vn_bg_set(arg);
+            else
+                vn_bg_crossfade(arg);
+        } else if(strcmp(cmd, "OVERLAY") == 0) {
+            vn_overlay_command(arg);
+        } else if(strcmp(cmd, "OVERLAY_TRACK") == 0) {
+            vn_overlay_track(arg);
+        } else if(strcmp(cmd, "OVERLAY_CLEAR") == 0) {
+            if(arg[0] >= '0' && arg[0] <= '9')
+                vn_overlay_clear(atoi(arg));
+            else
+                vn_overlay_clear_all();
         } else if(strcmp(cmd, "CHAR") == 0) {
             char pos_tok[16];
             const char *spec = split_cmd(arg, pos_tok, sizeof(pos_tok));
@@ -553,13 +668,135 @@ int vn_script_advance(void) {
                        consumed > 0 && eval_cond(fidx, op, (int32_t)fval)) {
                         add_parsed_option(opt_arg + consumed);
                     }
+                } else if(strcmp(opt_cmd, "MAP") == 0) {
+                    /* MAP <map raw16> <marker raw16> : the options are places on it */
+                    vm_st.pc++;
+                    char mp[64] = {0}, pp[64] = {0};
+                    sscanf(opt_arg, "%63s %63s", mp, pp);
+                    vn_text_set_choice_map(mp, pp);
+                } else if(strcmp(opt_cmd, "CANCEL") == 0) {
+                    /* CANCEL <target> : where B goes (not shown as an item) */
+                    vm_st.pc++;
+                    vn_text_set_choice_cancel(trim_ascii((char *)opt_arg));
+                } else if(strcmp(opt_cmd, "OPTION_BIT") == 0) {
+                    /* OPTION_BIT <bit> <0|1> <text> | <target> : shown when bit == value */
+                    vm_st.pc++;
+                    int bidx = 0, bval = 0, consumed = 0;
+                    if(sscanf(opt_arg, "%d %d %n", &bidx, &bval, &consumed) == 2 &&
+                       consumed > 0 && vn_script_get_bit(bidx) == (bval != 0)) {
+                        add_parsed_option(opt_arg + consumed);
+                    }
                 } else {
                     break;
                 }
             }
+            if(vn_text_get_choice_count() == 0) {
+                /* Every option was conditional and none applies: take the
+                   cancel route if there is one, otherwise carry on. */
+                char cancel[64];
+                vn_copy_str(cancel, sizeof(cancel), vn_text_get_choice_cancel());
+                dbglog(DBG_WARNING, "kosvn_script: CHOICE at line %lu has no options%s%s\n",
+                       (unsigned long)(line_idx + 1U), cancel[0] ? ", cancel -> " : "", cancel);
+                vn_text_clear_choices();
+                if(cancel[0] != '\0')
+                    vn_script_jump_label(cancel);
+                continue;
+            }
+            vn_text_choice_start();
             vn_text_reveal_all();
             vm_st.cur_cmd_line = line_idx;
             return 1;
+        } else if(strcmp(cmd, "BIT") == 0) {
+            int idx = 0, val = 0;
+            if(sscanf(arg, "%d %d", &idx, &val) == 2)
+                vn_script_set_bit(idx, val != 0);
+        } else if(strcmp(cmd, "BIT_RANGE") == 0) {
+            int from = 0, to = 0, val = 0;
+            if(sscanf(arg, "%d %d %d", &from, &to, &val) == 3) {
+                for(int i = from; i <= to; i++)
+                    vn_script_set_bit(i, val != 0);
+            }
+        } else if(strcmp(cmd, "IF_BIT") == 0) {
+            /* IF_BIT <bit> <0|1> GOTO <label> : jump when bit == value */
+            int idx = 0, val = 0;
+            char kw[16] = {0};
+            char tgt[64] = {0};
+            if(sscanf(arg, "%d %d %15s %63s", &idx, &val, kw, tgt) == 4 &&
+               strcmp(kw, "GOTO") == 0 && vn_script_get_bit(idx) == (val != 0))
+                vn_script_jump_label(tgt);
+        } else if(strcmp(cmd, "WAIT") == 0) {
+            /* WAIT <ms> : pause the script; A / skip cuts it short */
+            unsigned long ms = 0;
+            if(sscanf(arg, "%lu", &ms) == 1 && ms > 0U) {
+                vm_st.waiting_fx = true;
+                vm_st.wait_ms = (uint32_t)ms;
+                vm_st.cur_cmd_line = line_idx;
+                return 1;
+            }
+        } else if(strcmp(cmd, "MOVIE") == 0) {
+            if(movie_handler && !vn_core_is_skipping()) {
+                /* The movie needs the AICA streams; resume the BGM afterwards. */
+                char bgm[64];
+                vn_copy_str(bgm, sizeof(bgm), vn_audio_get_bgm_name());
+                vn_audio_stop_voice();
+                vn_audio_stop_bgm();
+                if(movie_handler(arg) < 0)
+                    dbglog(DBG_WARNING, "kosvn_script: MOVIE '%s' failed\n", arg);
+                if(bgm[0] != '\0')
+                    vn_audio_play_bgm(bgm);
+                vn_core_swallow_input();   /* the A that skipped the movie */
+            }
+        } else if(strcmp(cmd, "JUMP") == 0) {
+            /* JUMP <script_path> [label] : continue in another script file.
+               Flags and bits are kept; labels, call stack and sites are reset. */
+            char p[64] = {0};
+            char lbl[64] = {0};
+            if(sscanf(arg, "%63s %63s", p, lbl) < 1 || vn_script_load(p) < 0) {
+                dbglog(DBG_ERROR, "kosvn_script: JUMP to '%s' failed\n", p);
+                vm_st.ended = true;
+                return 0;
+            }
+            if(lbl[0] != '\0')
+                vn_script_jump_label(lbl);
+        } else if(strcmp(cmd, "STORY_LOCAL_BITS") == 0) {
+            /* STORY_LOCAL_BITS <from> <to> : bits kept per story (max 128) */
+            int a = -1, b = -1;
+            sscanf(arg, "%d %d", &a, &b);
+            vn_story_set_local_bits(a, b);
+        } else if(strcmp(cmd, "STORY_DEF") == 0) {
+            /* STORY_DEF <id> <start_script> <menu label> */
+            int id = 0, consumed = 0;
+            char p[64] = {0};
+            if(sscanf(arg, "%d %63s %n", &id, p, &consumed) == 2 && consumed > 0)
+                vn_story_define(id, p, arg + consumed);
+        } else if(strcmp(cmd, "STORY") == 0) {
+            vn_story_set_current(atoi(arg));
+        } else if(strcmp(cmd, "STORY_RESET") == 0) {
+            vn_story_reset();
+        } else if(strcmp(cmd, "SYSLOAD") == 0) {
+            /* Load the VMU save at the start of the next frame; if there is
+               none the script carries on with the next line. */
+            vn_core_request_load();
+            vm_st.cur_cmd_line = line_idx;
+            return 1;
+        } else if(strcmp(cmd, "TEXTBOX") == 0) {
+            vn_text_set_box_visible(strcmp(arg, "off") != 0);
+        } else if(strcmp(cmd, "TEXT_AREA") == 0) {
+            /* TEXT_AREA <x> <y> <w> | off : the background has its own text
+               window; speaker on its first row, dialogue on the next three */
+            unsigned x = 0, y = 0, w = 0;
+            if(sscanf(arg, "%u %u %u", &x, &y, &w) == 3)
+                vn_text_set_area(x, y, w);
+            else
+                vn_text_set_area(0, 0, 0);
+        } else if(strcmp(cmd, "CHOICE_CURSOR") == 0) {
+            /* CHOICE_CURSOR <x> <y> <step> | off : the items are part of the
+               picture, only a cursor is drawn left of item n at y + n*step */
+            int x = -1, y = 0, step = 0;
+            if(sscanf(arg, "%d %d %d", &x, &y, &step) == 3)
+                vn_text_set_choice_cursor(x, y, step);
+            else
+                vn_text_set_choice_cursor(-1, 0, 0);
         } else if(strcmp(cmd, "GOTO") == 0) {
             vn_script_jump_label(arg);
         } else if(strcmp(cmd, "CALL") == 0) {
@@ -637,13 +874,27 @@ int vn_script_advance(void) {
         } else if(strcmp(cmd, "BGM") == 0) {
             if(strcmp(arg, "stop") == 0)
                 vn_audio_stop_bgm();
+            else if(strncmp(arg, "fade ", 5) == 0)      /* BGM fade <ms> */
+                vn_audio_fade_bgm((uint32_t)(atoi(arg + 5) > 0 ? atoi(arg + 5) : 0));
             else
                 vn_audio_play_bgm(arg);
         } else if(strcmp(cmd, "SE") == 0) {
             vn_audio_play_se(arg);
-        } else if(strcmp(cmd, "VOICE") == 0) {
-            if(strcmp(arg, "stop") == 0)
+        } else if(strcmp(cmd, "SCENE_SE") == 0) {
+            /* SCENE_SE <wav> [loop] | stop : PS scene sound on the voice stream */
+            char p[64] = {0}, opt[8] = {0};
+            sscanf(arg, "%63s %7s", p, opt);
+            if(strcmp(p, "stop") == 0 || vn_core_is_skipping())
                 vn_audio_stop_voice();
+            else
+                vn_audio_play_scene_se(p, strcmp(opt, "loop") == 0);
+        } else if(strcmp(cmd, "LIP_MAP") == 0) {
+            vn_overlay_lip_map(arg);           /* LIP_MAP <frames> <f0..f4> */
+        } else if(strcmp(cmd, "SPEAKER") == 0) {
+            vn_overlay_set_speaker(arg);   /* owner of the next VOICE (lip<N>) */
+        } else if(strcmp(cmd, "VOICE") == 0) {
+            if(strcmp(arg, "stop") == 0 || vn_core_is_skipping())
+                vn_audio_stop_voice();   /* no point loading a voice we skip past */
             else
                 vn_audio_play_voice(arg);
         } else if(strcmp(cmd, "END") == 0) {

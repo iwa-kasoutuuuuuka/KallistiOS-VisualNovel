@@ -774,6 +774,7 @@ int snd_sfx_play_ex(sfx_play_data_t *data) {
     uint32_t size;
     snd_effect_t *t = (snd_effect_t *)data->idx;
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
 
     size = t->len;
 
@@ -815,6 +816,7 @@ int snd_sfx_play_ex(sfx_play_data_t *data) {
 
 void snd_sfx_stop(int chn) {
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
     cmd->cmd = AICA_CMD_CHAN;
     cmd->timestamp = 0;
     cmd->size = AICA_CMDSTR_CHANNEL_SIZE;

@@ -12,6 +12,7 @@
 #include <dc/maple.h>
 #include <dc/maple/vmu.h>
 #include <dc/vmu_pkg.h>
+#include <kos/fs.h>
 
 #include "kosvn_internal.h"
 
@@ -20,7 +21,34 @@ static void build_vmu_path(int slot, char *out, size_t out_sz) {
     snprintf(out, out_sz, "/vmu/a1/KOSVN%02d", s);
 }
 
+/* Game-supplied icon / names (vn_vmu_set_icon / vn_vmu_set_desc) */
+static bool     custom_icon;
+static uint16_t custom_pal[16];
+static uint8_t  custom_data[512];
+static char     desc_short_s[17] = "KOS-VN Save";
+static char     desc_long_prefix[24] = "KallistiOS-VN";
+
+void vn_vmu_set_icon(const uint16_t pal[16], const uint8_t data[512]) {
+    custom_icon = pal && data;
+    if(custom_icon) {
+        memcpy(custom_pal, pal, sizeof(custom_pal));
+        memcpy(custom_data, data, sizeof(custom_data));
+    }
+}
+
+void vn_vmu_set_desc(const char *dshort, const char *dlong_prefix) {
+    if(dshort)
+        vn_copy_str(desc_short_s, sizeof(desc_short_s), dshort);
+    if(dlong_prefix)
+        vn_copy_str(desc_long_prefix, sizeof(desc_long_prefix), dlong_prefix);
+}
+
 static void generate_save_icon(uint16_t pal[16], uint8_t icon[512]) {
+    if(custom_icon) {
+        memcpy(pal, custom_pal, sizeof(custom_pal));
+        memcpy(icon, custom_data, sizeof(custom_data));
+        return;
+    }
     memset(pal, 0, sizeof(uint16_t) * 16U);
     memset(icon, 0, 512U);
 
@@ -67,9 +95,8 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
 
     vmu_pkg_t pkg;
     memset(&pkg, 0, sizeof(pkg));
-    vn_copy_str(pkg.desc_short, sizeof(pkg.desc_short), "KOS-VN Save");
-    snprintf(pkg.desc_long, sizeof(pkg.desc_long), "KallistiOS-VN Slot %d (L:%lu)",
-             slot, (unsigned long)state->script_line);
+    vn_copy_str(pkg.desc_short, sizeof(pkg.desc_short), desc_short_s);
+    snprintf(pkg.desc_long, sizeof(pkg.desc_long), "%s %d", desc_long_prefix, slot + 1);
     vn_copy_str(pkg.app_id, sizeof(pkg.app_id), vn_core_get_app_id());
     pkg.icon_cnt = 1;
     pkg.icon_anim_speed = 0;
@@ -89,19 +116,23 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
 
     char path[32];
     build_vmu_path(slot, path, sizeof(path));
-    FILE *fp = fopen(path, "wb");
-    if(!fp) {
+    /* O_META: write the package as built. Without it the current fs_vmu
+       treats the data as headerless, and on reading it strips the header,
+       so vmu_pkg_parse() in vn_vmu_load() could never succeed. */
+    file_t fd = fs_open(path, O_WRONLY | O_TRUNC | O_META);
+    if(fd == FILEHND_INVALID) {
         free(pkg_out);
-        dbglog(DBG_ERROR, "kosvn_vmu: fopen('%s', wb) failed\n", path);
+        dbglog(DBG_ERROR, "kosvn_vmu: open('%s') for writing failed\n", path);
         return -1;
     }
 
-    size_t written = fwrite(pkg_out, 1, (size_t)pkg_size, fp);
-    fclose(fp);
+    ssize_t written = fs_write(fd, pkg_out, (size_t)pkg_size);
+    int close_rc = fs_close(fd);
     free(pkg_out);
 
-    if(written != (size_t)pkg_size) {
-        dbglog(DBG_ERROR, "kosvn_vmu: short write %zu/%d\n", written, pkg_size);
+    if(written != (ssize_t)pkg_size || close_rc < 0) {
+        dbglog(DBG_ERROR, "kosvn_vmu: write failed %d/%d (close %d)\n",
+               (int)written, pkg_size, close_rc);
         return -1;
     }
 
@@ -121,8 +152,8 @@ int vn_vmu_load(int slot, vn_save_state_t *state_out) {
 
     char path[32];
     build_vmu_path(slot, path, sizeof(path));
-    FILE *fp = fopen(path, "rb");
-    if(!fp) {
+    file_t fd = fs_open(path, O_RDONLY | O_META);   /* raw: keep the package header */
+    if(fd == FILEHND_INVALID) {
         dbglog(DBG_WARNING, "kosvn_vmu: save file '%s' not found\n", path);
         return -1;
     }
@@ -131,12 +162,13 @@ int vn_vmu_load(int slot, vn_save_state_t *state_out) {
     size_t max_sz = 16384U;
     uint8_t *buf = (uint8_t *)malloc(max_sz);
     if(!buf) {
-        fclose(fp);
+        fs_close(fd);
         return -1;
     }
 
-    size_t fsz = fread(buf, 1, max_sz, fp);
-    fclose(fp);
+    ssize_t got = fs_read(fd, buf, max_sz);
+    fs_close(fd);
+    size_t fsz = got > 0 ? (size_t)got : 0U;
     if(fsz == 0) {
         free(buf);
         return -1;

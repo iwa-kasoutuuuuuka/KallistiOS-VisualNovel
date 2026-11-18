@@ -1,1 +1,1 @@
-OBJS += kosvn_core.o kosvn_gfx.o kosvn_text.o kosvn_script.o kosvn_vmu.o kosvn_netdbg.o
+OBJS += kosvn_core.o kosvn_gfx.o kosvn_text.o kosvn_script.o kosvn_vmu.o kosvn_netdbg.o kosvn_overlay.o

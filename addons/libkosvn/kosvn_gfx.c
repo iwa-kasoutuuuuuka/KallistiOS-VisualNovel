@@ -52,6 +52,9 @@ static struct {
     bool                 has_bg;
     vn_tex_t             bg_tex;
     char                 bg_name[64];
+    vn_tex_t             bg_prev;          /* BG <path> <ms>: picture fading out */
+    bool                 has_bg_prev;
+    uint32_t             xfade_elapsed_ms, xfade_ms;
     vn_sprite_slot_t     sprites[VN_MAX_SPRITES];
     bool                 has_cutin;
     vn_tex_t             cutin_tex;
@@ -180,7 +183,7 @@ int vn_tex_load_raw16(vn_tex_t *tex, const char *path, uint16_t w, uint16_t h, u
     if(!tex || !path || !is_pow2(w) || !is_pow2(h))
         return -1;
 
-    FILE *fp = fopen(path, "rb");
+    FILE *fp = vn_fopen(path, "rb");
     if(!fp) {
         dbglog(DBG_ERROR, "kosvn_gfx: failed to open raw16 '%s'\n", path);
         return -1;
@@ -558,6 +561,8 @@ static bool is_vram_ptr_active(pvr_ptr_t ptr) {
         return false;
     if(gfx_st.has_bg && gfx_st.bg_tex.vram_ptr == ptr)
         return true;
+    if(gfx_st.has_bg_prev && gfx_st.bg_prev.vram_ptr == ptr)
+        return true;
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         if(gfx_st.sprites[i].active && gfx_st.sprites[i].tex.vram_ptr == ptr)
             return true;
@@ -590,6 +595,56 @@ static bool evict_lru_cached_tex(void) {
     return true;
 }
 
+/* Load an img_w x img_h RAW16 into the top-left of a tex_w x tex_h texture.
+   The last column/row is repeated into the padding so bilinear filtering does
+   not pull black in at the right and bottom edges. */
+static int load_raw16_padded(vn_tex_t *tex, const char *path, uint16_t img_w, uint16_t img_h,
+                             uint16_t tex_w, uint16_t tex_h, uint32_t fmt) {
+    FILE *fp = vn_fopen(path, "rb");
+    if(!fp) {
+        dbglog(DBG_ERROR, "kosvn_gfx: failed to open raw16 '%s'\n", path);
+        return -1;
+    }
+    size_t bytes = (size_t)tex_w * tex_h * 2U;
+    uint16_t *tmp = (uint16_t *)memalign(32, bytes);
+    if(!tmp) {
+        fclose(fp);
+        return -1;
+    }
+    size_t got = 0;
+    for(uint16_t y = 0; y < img_h; y++)
+        got += fread(tmp + (size_t)y * tex_w, 2, img_w, fp);
+    fclose(fp);
+    if(got != (size_t)img_w * img_h) {
+        free(tmp);
+        dbglog(DBG_ERROR, "kosvn_gfx: short read on '%s'\n", path);
+        return -1;
+    }
+    for(uint16_t y = 0; y < img_h; y++) {
+        uint16_t *row = tmp + (size_t)y * tex_w;
+        for(uint16_t x = img_w; x < tex_w; x++)
+            row[x] = row[img_w - 1];
+    }
+    for(uint16_t y = img_h; y < tex_h; y++)
+        memcpy(tmp + (size_t)y * tex_w, tmp + (size_t)(img_h - 1) * tex_w, (size_t)tex_w * 2U);
+
+    vn_tex_free(tex);
+    tex->vram_ptr = pvr_mem_malloc(bytes);
+    if(!tex->vram_ptr) {
+        free(tmp);
+        dbglog(DBG_ERROR, "kosvn_gfx: out of PVR VRAM (%zu bytes)\n", bytes);
+        return -1;
+    }
+    pvr_txr_load(tmp, tex->vram_ptr, bytes);
+    free(tmp);
+    tex->width = tex_w;
+    tex->height = tex_h;
+    tex->fmt = fmt;
+    tex->img_w = img_w;
+    tex->img_h = img_h;
+    return 0;
+}
+
 static int generate_or_load_tex(vn_tex_kind_t kind, const char *asset_spec, vn_tex_t *out_tex) {
     memset(out_tex, 0, sizeof(*out_tex));
     if(kind == VN_TEX_KIND_BG) {
@@ -600,6 +655,18 @@ static int generate_or_load_tex(vn_tex_kind_t kind, const char *asset_spec, vn_t
             else if(strcmp(tag, "cyber_lab") == 0) style = 2;
             return vn_tex_create_procedural_bg(out_tex, 256, 256, style);
         }
+        /* A 320x240 RAW16 (PS screen size, 153600 bytes) goes into a 512x256
+           texture and is drawn scaled 2x; anything else is a 512x512 RAW16. */
+        FILE *fp = vn_fopen(asset_spec, "rb");
+        long sz = -1;
+        if(fp) {
+            fseek(fp, 0, SEEK_END);
+            sz = ftell(fp);
+            fclose(fp);
+        }
+        if(sz == 320L * 240L * 2L)
+            return load_raw16_padded(out_tex, asset_spec, 320, 240, 512, 256,
+                                     PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED);
         return vn_tex_load_raw16(out_tex, asset_spec, 512, 512,
                                  PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED);
     }
@@ -676,8 +743,40 @@ static int acquire_cached_tex(vn_tex_kind_t kind, const char *asset_spec, vn_tex
     return 0;
 }
 
+/* "BG <path> [ms]": a trailing number is a crossfade time; vn_bg_set cuts. */
+static int bg_set_ms(const char *asset_spec, uint32_t ms);
+
 int vn_bg_set(const char *asset_spec) {
-    if(!asset_spec || asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
+    return bg_set_ms(asset_spec, 0U);
+}
+
+int vn_bg_crossfade(const char *asset_spec) {
+    const char *sp = asset_spec ? strchr(asset_spec, ' ') : NULL;
+    return bg_set_ms(asset_spec, sp ? (uint32_t)atoi(sp + 1) : 0U);
+}
+
+static int bg_set_ms(const char *spec_in, uint32_t ms) {
+    char spec[64];
+    vn_copy_str(spec, sizeof(spec), spec_in ? spec_in : "");
+    char *sp = strchr(spec, ' ');
+    if(sp)
+        *sp = '\0';
+    const char *asset_spec = spec;
+    gfx_st.has_bg_prev = false;
+    if(ms > 0U && gfx_st.fade_alpha > 0.004f && gfx_st.fade_target > 0.004f &&
+       !(gfx_st.fade_duration_ms > 0U && gfx_st.fade_elapsed_ms < gfx_st.fade_duration_ms)) {
+        /* PS: a dissolve after a fade to black / white dissolves from that
+           colour to the new picture (the fade is not lifted separately) */
+        vn_fx_fade(gfx_st.fade_rgb, ms);
+        ms = 0U;
+    }
+    if(ms > 0U && gfx_st.has_bg && strcmp(gfx_st.bg_name, asset_spec) != 0) {
+        gfx_st.bg_prev = gfx_st.bg_tex;   /* stays in the cache while it shows */
+        gfx_st.has_bg_prev = true;
+        gfx_st.xfade_elapsed_ms = 0U;
+        gfx_st.xfade_ms = ms;
+    }
+    if(asset_spec[0] == '\0' || strcmp(asset_spec, "none") == 0) {
         memset(&gfx_st.bg_tex, 0, sizeof(gfx_st.bg_tex));
         gfx_st.has_bg = false;
         gfx_st.bg_name[0] = '\0';
@@ -766,7 +865,10 @@ void vn_char_clear_all(void) {
 }
 
 void vn_fx_fade(uint32_t target_argb, uint32_t duration_ms) {
-    gfx_st.fade_rgb = target_argb & 0x00FFFFFFU;
+    /* fading out (alpha 0) keeps the colour on screen: a fade to white then
+       "back" must not snap to another colour first */
+    if((target_argb >> 24) != 0U || gfx_st.fade_alpha <= 0.004f)
+        gfx_st.fade_rgb = target_argb & 0x00FFFFFFU;
     gfx_st.fade_start = gfx_st.fade_alpha;
     gfx_st.fade_target = (float)((target_argb >> 24) & 0xFFU) / 255.0f;
     gfx_st.fade_elapsed_ms = 0;
@@ -774,6 +876,12 @@ void vn_fx_fade(uint32_t target_argb, uint32_t duration_ms) {
     if(duration_ms == 0) {
         gfx_st.fade_alpha = gfx_st.fade_target;
     }
+}
+
+/* New script / title / load: no fade left over from before. */
+void vn_fx_reset(void) {
+    gfx_st.fade_alpha = gfx_st.fade_start = gfx_st.fade_target = 0.0f;
+    gfx_st.fade_elapsed_ms = gfx_st.fade_duration_ms = 0U;
 }
 
 void vn_fx_shake(float amplitude, uint32_t duration_ms) {
@@ -787,11 +895,18 @@ void vn_fx_shake(float amplitude, uint32_t duration_ms) {
 }
 
 bool vn_fx_is_busy(void) {
-    return (gfx_st.fade_duration_ms > 0 && gfx_st.fade_elapsed_ms < gfx_st.fade_duration_ms) ||
+    return gfx_st.has_bg_prev ||
+           (gfx_st.fade_duration_ms > 0 && gfx_st.fade_elapsed_ms < gfx_st.fade_duration_ms) ||
            (gfx_st.shake_duration_ms > 0 && gfx_st.shake_elapsed_ms < gfx_st.shake_duration_ms);
 }
 
 void vn_gfx_update(uint32_t dt_ms) {
+    vn_overlay_update(dt_ms);
+    if(gfx_st.has_bg_prev) {
+        gfx_st.xfade_elapsed_ms += dt_ms;
+        if(gfx_st.xfade_elapsed_ms >= gfx_st.xfade_ms)
+            gfx_st.has_bg_prev = false;
+    }
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         vn_sprite_slot_t *sp = &gfx_st.sprites[i];
         if(sp->active && sp->alpha < sp->alpha_target) {
@@ -924,6 +1039,30 @@ void vn_gfx_draw_txr_quad(pvr_list_t list, const vn_tex_t *tex, float x, float y
     pvr_prim(&vert, sizeof(vert));
 }
 
+/* Textured quad with free corners (TL, BL, TR, BR), e.g. a rotated sprite. */
+void vn_gfx_draw_txr_quad4(pvr_list_t list, const vn_tex_t *tex, const float xs[4], const float ys[4],
+                           float z, float u0, float v0, float u1, float v1, uint32_t argb) {
+    if(!tex || !tex->vram_ptr)
+        return;
+    pvr_poly_cxt_t cxt;
+    pvr_poly_hdr_t hdr;
+    pvr_poly_cxt_txr(&cxt, list, tex->fmt, tex->width, tex->height, tex->vram_ptr, PVR_FILTER_BILINEAR);
+    cxt.gen.culling = PVR_CULLING_NONE;
+    cxt.txr.uv_clamp = PVR_UVCLAMP_UV;
+    pvr_poly_compile(&hdr, &cxt);
+    pvr_prim(&hdr, sizeof(hdr));
+    const float us[4] = { u0, u0, u1, u1 };
+    const float vs[4] = { v0, v1, v0, v1 };
+    pvr_vertex_t vert;
+    for(int i = 0; i < 4; i++) {
+        vert.flags = (i == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+        vert.x = xs[i]; vert.y = ys[i]; vert.z = z;
+        vert.u = us[i]; vert.v = vs[i];
+        vert.argb = argb; vert.oargb = 0;
+        pvr_prim(&vert, sizeof(vert));
+    }
+}
+
 void vn_gfx_render_frame(void) {
     static const float sprite_cx[VN_MAX_SPRITES] = { 145.0f, 320.0f, 495.0f };
     float sx = gfx_st.shake_x;
@@ -934,15 +1073,28 @@ void vn_gfx_render_frame(void) {
 
     pvr_list_begin(PVR_LIST_OP_POLY);
     if(gfx_st.has_bg) {
-        vn_gfx_draw_txr_quad(PVR_LIST_OP_POLY, &gfx_st.bg_tex,
+        const vn_tex_t *bt = &gfx_st.bg_tex;
+        float u1 = bt->img_w ? (float)bt->img_w / (float)bt->width : 1.0f;
+        float v1 = bt->img_h ? (float)bt->img_h / (float)bt->height : 1.0f;
+        vn_gfx_draw_txr_quad(PVR_LIST_OP_POLY, bt,
                              sx, sy, 640.0f, 480.0f, 1.0f,
-                             0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFU);
+                             0.0f, 0.0f, u1, v1, 0xFFFFFFFFU);
     } else {
         vn_gfx_draw_col_quad(PVR_LIST_OP_POLY, 0.0f, 0.0f, 640.0f, 480.0f, 1.0f, 0xFF0C1020U);
     }
     pvr_list_finish();
 
     pvr_list_begin(PVR_LIST_TR_POLY);
+    if(gfx_st.has_bg_prev && gfx_st.xfade_ms > 0U) {
+        /* crossfade: the old picture on top, fading out */
+        const vn_tex_t *pt = &gfx_st.bg_prev;
+        float u1 = pt->img_w ? (float)pt->img_w / (float)pt->width : 1.0f;
+        float v1 = pt->img_h ? (float)pt->img_h / (float)pt->height : 1.0f;
+        uint32_t a = 255U - (255U * gfx_st.xfade_elapsed_ms) / gfx_st.xfade_ms;
+        vn_gfx_draw_txr_quad(PVR_LIST_TR_POLY, pt, sx, sy, 640.0f, 480.0f, 9.0f,
+                             0.0f, 0.0f, u1, v1, (a << 24) | 0x00FFFFFFU);
+    }
+    vn_overlay_render(sx, sy);
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         vn_sprite_slot_t *sp = &gfx_st.sprites[i];
         if(!sp->active)

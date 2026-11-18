@@ -502,6 +502,7 @@ void snd_stream_queue_disable(snd_stream_hnd_t hnd) {
 /* Start streaming (or if queueing is enabled, just get ready) */
 static void snd_stream_start_type(snd_stream_hnd_t hnd, uint32_t type, uint32_t freq, int st) {
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
 
     CHECK_HND(hnd);
 
@@ -613,6 +614,7 @@ void snd_stream_queue_go(snd_stream_hnd_t hnd) {
 /* Stop streaming */
 void snd_stream_stop(snd_stream_hnd_t hnd) {
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
 
     CHECK_HND(hnd);
 
@@ -872,6 +874,7 @@ int snd_stream_poll(snd_stream_hnd_t hnd) {
 /* Set the volume on the streaming channels */
 void snd_stream_volume(snd_stream_hnd_t hnd, int vol) {
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
 
     CHECK_HND(hnd);
 
@@ -897,6 +900,7 @@ void snd_stream_volume(snd_stream_hnd_t hnd, int vol) {
 /* Set the panning on the streaming channels */
 void snd_stream_pan(snd_stream_hnd_t hnd, int left_pan, int right_pan) {
     AICA_CMDSTR_CHANNEL(tmp, cmd, chan);
+    memset(tmp, 0, sizeof(tmp));   /* unset fields (e.g. pos) were stack garbage the ARM copied */
 
     CHECK_HND(hnd);
 
