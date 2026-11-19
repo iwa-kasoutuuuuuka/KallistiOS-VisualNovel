@@ -71,6 +71,13 @@
 * **FNV-1a 32bit ラベルハッシュ & 高速条件式評価 (`kosvn_script.c`):** スクリプト読込時に全 `LABEL`（最大 128 個）の FNV-1a ハッシュを計算し、`GOTO` / `CALL` / `@call:` ジャンプおよび `IF` / `IF_AND` / `OPTION_IF` の比較演算を高速化。
 * **マルチサイト台詞保持・`CHOICE` 復帰保護・VMU `KVN2` フォーマット (`kosvn_script.c` / `kosvn_vmu.c`):** サイト切替時や `CHOICE` 行でのクイックロード時に直前の台詞テキスト・コールスタック・全 256 フラグ・カットイン状態を完全復元。
 
+### このブランチ（`feat/eve-ext`）で加えたエンジン機能
+* **演出:** 背景のクロスフェード／羽根ワイプ（`BG <パス> <ms> [wipe]`）、黒い羽根のシャッター（`WIPE`）、重ね絵の枠指定クリアとトラック再生（`OVERLAY_CLEAR [枠]` / `OVERLAY_TRACK`）、口パクの人物指定（`SPEAKER` / `lip<N>` / `LIP_MAP`）
+* **音:** BGM のループ開始位置・曲番号・フェードアウト、場面の効果音（`SCENE_SE`）、ADPCM のボイスと `.LIP`
+* **スクリプト:** 1 ビットフラグ 4,608 個（`BIT` / `BIT_RANGE` / `IF_BIT` / `OPTION_BIT`）、`JUMP`、`MOVIE`、並行する話（`STORY_DEF` / `STORY` / `STORY_LOCAL_BITS` / `STORY_RESET`）、`SYSLOAD`、選択肢の地図表示（`MAP`）・`CANCEL`・`CHOICE_CURSOR`、絵に描かれた文字欄への対応（`TEXT_AREA` / `TEXTBOX`）
+* **システム:** 4 スロットのセーブ（`VN_SAVE_VERSION` 8）、VMU アイコン・ファイル名の設定、パスの読み替え（`vn_set_path_remap()`）、テスト用の自動プレイ（`autoplay` / `autoplay_slow`）
+* **安定化:** テクスチャの遅延解放（`vn_tex_free_later()`）など、実機専用の不具合への対処（第 11 章）
+
 ---
 
 ## 3. ディレクトリ構成
@@ -233,7 +240,7 @@ $(TARGET): $(OBJS)
 
 | コマンド | 構文・引数 | 動作説明 |
 | --- | --- | --- |
-| `BG` | `BG <アセット指定>` | 背景を切り替えます。`none` で背景消去。`proc:...` または RAW16 ファイルパスを指定（512x512、または 153,600 バイトの 320x240 = PS の画面そのまま。後者は 512x256 のテクスチャに入れて 2 倍で描きます）。`BG <パス> <ミリ秒>` で前の背景からクロスフェードします（スキップ中は即切り替え。待つときは続けて `WAIT_FX`）。 |
+| `BG` | `BG <アセット指定>` | 背景を切り替えます。`none` で背景消去。`proc:...` または RAW16 ファイルパスを指定（512x512、または 153,600 バイトの 320x240 = PS の画面そのまま。後者は 512x256 のテクスチャに入れて 2 倍で描きます）。`BG <パス> <ミリ秒>` で前の背景からクロスフェードします（スキップ中は即切り替え。待つときは続けて `WAIT_FX`）。`BG <パス> <ミリ秒> wipe` は、前の背景が 4 枚の羽根の形で時計回りに縮んで新しい背景が見えてくる切り替えです。 |
 | `CHAR` | `CHAR <left\|center\|right> <アセット指定>` | 立ち絵を左・中央・右スロットへフェードイン表示します（最大 3 人同時）。 |
 | `CLEAR_CHAR` | `CLEAR_CHAR [left\|center\|right\|all]` | 指定スロットまたは全スロット（`all`）の立ち絵を消去します。 |
 | `NAME` | `NAME <話者名>` | メッセージウィンドウ上の話者名バッジを設定します。`none` で非表示。 |
@@ -277,9 +284,10 @@ $(TARGET): $(OBJS)
 | `CHOICE_CURSOR` | `CHOICE_CURSOR <x> <y> <間隔> \| off` | 選択肢の項目が絵に描いてあるとき、カードを描かずに項目の左にカーソル（●）だけを描きます。座標は 640x480 の画面で、n 番目の項目は y + n×間隔。 |
 | `CUTIN` | `CUTIN <アセット指定 \| none>` | 画面中央に証拠品・アイテムのカットイン枠を表示／`none` で消去します（`proc:item_keycard` 等や 128x128 RAW16 に対応）。 |
 | `FADE` | `FADE <0xAARRGGBB> <時間ms>` | 画面全体のカラーオーバーレイをフェードさせます（例: 黒フェードアウト `0xFF000000 600`、フェードイン `0x00000000 600`）。 |
+| `WIPE` | `WIPE close\|open <時間ms>` | 画面の中心から 4 枚の黒い羽根が時計回りに広がって画面を閉じる（`close`、終わると黒のまま）／縮んで開く（`open`）シャッターです。羽根は 1 フレームに 7 ドット（PS の画面で）進みます。待つときは続けて `WAIT_FX`。 |
 | `SHAKE` | `SHAKE <振幅px> <時間ms>` | 画面とメッセージウィンドウを揺らします（例: `SHAKE 8.0 350`）。 |
 | `WAIT_FX` | `WAIT_FX` | 実行中の `FADE` / `SHAKE` が完了するまで待機します（`A` またはスキップで即解除可）。 |
-| `BGM` | `BGM <アセット指定 \| stop \| fade <ミリ秒>>` | AICA ストリーミング BGM を再生または停止（`stop`）します。`fade` は指定時間で音量を下げてから止めます（台本は待たずに進みます）。 |
+| `BGM` | `BGM <アセット指定> [<ループ開始サンプル> [<曲番号>]] \| stop \| fade <ミリ秒>` | AICA ストリーミング BGM を再生または停止（`stop`）します。WAV は前奏＋ループ部分の 1 回分で、最後まで来るとループ開始サンプルに戻ります。曲番号を付けると、同じ番号の曲が鳴っている間は鳴り直さずに続けます（フェード中なら取り消して音量を戻します）。`fade` は指定時間で音量を下げてから止めます（台本は待たずに進みます）。 |
 | `SE` | `SE <アセット指定>` | AICA 効果音を再生します（FIFO 8枠キャッシュ付き）。 |
 | `VOICE` | `VOICE <アセット指定 \| stop>` | 専用ボイスチャンネルで台詞音声を再生します（次の台詞送りやサイト切替時に自動停止）。16bit PCM または 4bit ADPCM（KOS `utils/wav2adpcm` の出力）の `.wav` は RAM に読んでストリーム再生するので長さの制限はありません。同じ名前の `.LIP`（[コマ数 u8, 口の形 u8] の並び）があれば口パクに使います。スキップ中は読み込みません。 |
 | `END` | `END` | シナリオを終了し、`vn_run_script()` を抜けます。 |
@@ -411,7 +419,7 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 | **`Y` ボタン** | **バックログ (`BACKLOG`)** 履歴画面の開閉 |
 | **十字キー 上下** | 選択肢のカーソル移動 ／ バックログ表示中のスクロール |
 | **`R` トリガー（長押し）** | **スキップ (`SKIP`)** 早送り |
-| **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ**（`KVN2` 形式：全サイト状態・コールスタック・256 フラグ・BGM/立ち絵/カットインを一括保存） |
+| **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ**（`KVN2` 形式・`VN_SAVE_VERSION` 8、古い版のセーブは読み込めません：全サイト状態・コールスタック・256 フラグ・BGM/立ち絵/カットインを一括保存） |
 | **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（`CHOICE` 待機中の行へのロード時は直前台詞も自動復元） |
 | **`L` トリガー + `X`** | **Multi-Sight サイトザッピング切替**（有効時に小次郎⇔まりな等の視点を即時切替、`SITE_LOCK` 中は `[SITE LOCKED]` 通知を表示してブロック） |
 | **`START` ボタン** | `vn_config_t.title_script` があればシステムメニュー（セーブ／ロード／話の切り替え／タイトルへ戻る／閉じる）。セーブとロードは 4 スロット（`VN_SAVE_SLOTS`、VMU のファイル KOSVN00〜03、1 つ約 9 ブロック）で、一覧には台本名と台詞の頭が出ます。`L+A` / `L+B` は最後に使ったスロットへのクイックセーブ／ロード。タイトル画面では `A` と同じ。`title_script` が無ければゲームループ終了 |
@@ -445,13 +453,13 @@ while True:
 シナリオ駆動だけでなく、独自のミニゲームや演出を C言語から直接制御したい場合は以下の関数群を利用できます。
 
 * **ライフサイクル:** `vn_init()`, `vn_shutdown()`, `vn_run_script()`, `vn_step_frame()`
-* **グラフィックス / 演出:** `vn_bg_set()`, `vn_bg_crossfade()`（`"<パス> <ミリ秒>"` でクロスフェード）, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_cutin_set()`, `vn_cutin_clear()`, `vn_fx_fade()`, `vn_fx_reset()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`, `vn_tex_free_later()`（描画中かもしれないテクスチャを数フレーム後に解放）
+* **グラフィックス / 演出:** `vn_bg_set()`, `vn_bg_crossfade()`（`"<パス> <ミリ秒>"` でクロスフェード）, `vn_char_set()`, `vn_char_clear()`, `vn_char_clear_all()`, `vn_cutin_set()`, `vn_cutin_clear()`, `vn_fx_fade()`, `vn_fx_wipe()`（羽根のシャッター）, `vn_fx_reset()`, `vn_fx_shake()`, `vn_fx_is_busy()`, `vn_tex_load_raw16()`, `vn_tex_free()`, `vn_tex_free_later()`（描画中かもしれないテクスチャを数フレーム後に解放）
 * **データの場所:** `vn_set_path_remap()`（例: dcload-ip から起動したときだけ `/cd/` を `/pc/...` に読み替える）, `vn_resolve_path()`
 * **並行する話:** 台本の `STORY_DEF` / `STORY` / `STORY_LOCAL_BITS` で設定（C から呼ぶ API はありません）
 * **テスト:** `vn_config_t.autoplay`（スキップしながら選択肢を自動で選ぶ）, `autoplay_slow`（スキップせず声・効果音・演出を流す）, `autoplay_switch_every`
 * **テキスト / 選択肢 / 履歴:** `vn_text_set_speaker()`, `vn_text_set_dialogue()`, `vn_text_add_choice()`, `vn_backlog_push()`, `vn_backlog_set_visible()`
-* **スクリプト VM & Multi-Sight:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_call_label()`, `vn_script_return()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`, `vn_script_add_flag()`, `vn_site_init()`, `vn_site_switch()`, `vn_site_get_active()`, `vn_site_is_enabled()`, `vn_site_set_locked()`, `vn_site_is_locked()`
-* **VMU:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_draw_logo()`, `vn_vmu_set_icon()`（セーブファイルのアイコン 32x32・16 色）, `vn_vmu_set_desc()`（ファイル管理画面に出る名前）
+* **スクリプト VM & Multi-Sight:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_call_label()`, `vn_script_return()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`, `vn_script_add_flag()`, `vn_script_get_bit()`, `vn_script_set_bit()`, `vn_set_movie_handler()`（`MOVIE` の再生関数を登録）, `vn_site_init()`, `vn_site_switch()`, `vn_site_get_active()`, `vn_site_is_enabled()`, `vn_site_set_locked()`, `vn_site_is_locked()`
+* **VMU（セーブ形式 `VN_SAVE_VERSION` = 8。バージョンが違う古いセーブは読み込まずに無効扱いにします）:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_draw_logo()`, `vn_vmu_set_icon()`（セーブファイルのアイコン 32x32・16 色）, `vn_vmu_set_desc()`（ファイル管理画面に出る名前）
 * **サウンド:** `vn_audio_play_bgm()`, `vn_audio_stop_bgm()`, `vn_audio_play_se()`, `vn_audio_play_voice()`, `vn_audio_stop_voice()`
 * **LAN デバッグ:** `vn_netdbg_init()`, `vn_netdbg_log()`, `vn_netdbg_send_telemetry()`
 
