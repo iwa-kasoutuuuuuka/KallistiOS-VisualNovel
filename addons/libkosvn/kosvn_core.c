@@ -23,6 +23,11 @@
    save) replayed stale music on real hardware. Requests are at most half. */
 #define BGM_STREAM_BYTES 65536
 #define BGM_REQ_MAX      (BGM_STREAM_BYTES / 2)
+/* Volumes (0..255, about linear): music sits ~1.39x above voice like the PS
+   at its default options (SsSeqSetVol 82/127 vs XA 126/127 over the renders) */
+#define BGM_VOL          255
+#define VOICE_VOL        183
+#define UI_SE_VOL        163
 #define VN_SFX_CACHE_MAX 8
 
 typedef struct vn_sfx_entry {
@@ -61,6 +66,9 @@ static struct {
     uint32_t          bgm_phase;
     uint16_t         *bgm_chunk;
     char              bgm_name[64];
+    char              bgm_spec[64];          /* what is playing, kept during a fade */
+    int               bgm_id;                /* BGM <path> <loop> <id>: -1 = none */
+    long              bgm_loop_ofs;          /* file offset the music loops back to */
     FILE             *bgm_wav_fp;
     vn_sfx_entry_t    sfx_cache[VN_SFX_CACHE_MAX];
     int               sfx_cache_cnt;
@@ -152,7 +160,7 @@ static void *bgm_stream_cb(snd_stream_hnd_t hnd, int smp_req, int *smp_recv) {
     if(core_st.bgm_wav_fp) {
         size_t got = fread(buf, 1, (size_t)bytes, core_st.bgm_wav_fp);
         if(got < (size_t)bytes) {
-            fseek(core_st.bgm_wav_fp, 44, SEEK_SET);
+            fseek(core_st.bgm_wav_fp, core_st.bgm_loop_ofs, SEEK_SET);   /* intro, then the loop */
             size_t rest = (size_t)bytes - got;
             size_t got2 = fread((uint8_t *)buf + got, 1, rest, core_st.bgm_wav_fp);
             if(got + got2 < (size_t)bytes) {
@@ -197,11 +205,27 @@ const char *vn_audio_get_bgm_name(void) {
     return core_st.bgm_name;
 }
 
+/* BGM <path> [<loop start sample> [<id>]]: the file is one pass (intro + loop
+   section); at its end the music goes back to the loop start. A play of the id
+   that is already playing keeps the music going (PS: BGM_LOAD of the current
+   number, then \p, only cancels a fade-out and restores the volume). */
 int vn_audio_play_bgm(const char *path_or_spec) {
-    /* PS: a play (\p) during a fade-out cancels the fade and switches tracks */
+    char path[64] = {0};
+    long loop = 0;
+    int id = -1;
+    if(path_or_spec)
+        sscanf(path_or_spec, "%63s %ld %d", path, &loop, &id);
+    if(id >= 0 && core_st.bgm_playing && id == core_st.bgm_id &&
+       strcmp(path_or_spec, core_st.bgm_spec) == 0) {
+        core_st.bgm_fade_ms = core_st.bgm_fade_left = 0U;
+        if(core_st.bgm_stream != SND_STREAM_INVALID)
+            snd_stream_volume(core_st.bgm_stream, BGM_VOL);
+        vn_copy_str(core_st.bgm_name, sizeof(core_st.bgm_name), core_st.bgm_spec);
+        return 0;
+    }
     vn_audio_stop_bgm();
-    if(!core_st.audio_ready || !path_or_spec || path_or_spec[0] == '\0' ||
-       strcmp(path_or_spec, "none") == 0) {
+    if(!core_st.audio_ready || !path_or_spec || path[0] == '\0' ||
+       strcmp(path, "none") == 0) {
         return 0;
     }
 
@@ -217,13 +241,14 @@ int vn_audio_play_bgm(const char *path_or_spec) {
         core_st.bgm_proc_mode = (strstr(path_or_spec + 5, "tense") != NULL) ? 1 : 0;
         core_st.bgm_phase = 0;
     } else {
-        core_st.bgm_wav_fp = vn_fopen(path_or_spec, "rb");
+        core_st.bgm_wav_fp = vn_fopen(path, "rb");
         if(!core_st.bgm_wav_fp) {
-            dbglog(DBG_WARNING, "kosvn_audio: cannot open BGM '%s'\n", path_or_spec);
+            dbglog(DBG_WARNING, "kosvn_audio: cannot open BGM '%s'\n", path);
             return -1;
         }
-        /* Skip standard 44-byte WAV header */
+        /* Skip standard 44-byte WAV header (mono PCM16: 2 bytes a sample) */
         fseek(core_st.bgm_wav_fp, 44, SEEK_SET);
+        core_st.bgm_loop_ofs = 44L + 2L * (loop > 0 ? loop : 0);
     }
 
     core_st.bgm_stream = snd_stream_alloc(bgm_stream_cb, BGM_STREAM_BYTES);
@@ -238,8 +263,10 @@ int vn_audio_play_bgm(const char *path_or_spec) {
     core_st.bgm_playing = true;
     core_st.bgm_fade_ms = core_st.bgm_fade_left = 0U;
     vn_copy_str(core_st.bgm_name, sizeof(core_st.bgm_name), path_or_spec);
+    vn_copy_str(core_st.bgm_spec, sizeof(core_st.bgm_spec), path_or_spec);
+    core_st.bgm_id = id;
     snd_stream_start(core_st.bgm_stream, rate, stereo);
-    snd_stream_volume(core_st.bgm_stream, 150);
+    snd_stream_volume(core_st.bgm_stream, BGM_VOL);
     core_st.bgm_hold = 2U;    /* see vn_audio_update */
     dbglog(DBG_INFO, "kosvn_audio: BGM '%s' started\n", path_or_spec);
     return 0;
@@ -259,6 +286,8 @@ void vn_audio_fade_bgm(uint32_t ms) {
 
 void vn_audio_stop_bgm(void) {
     core_st.bgm_fade_ms = core_st.bgm_fade_left = 0U;
+    core_st.bgm_id = -1;
+    core_st.bgm_spec[0] = '\0';
     if(core_st.bgm_playing && core_st.bgm_stream != SND_STREAM_INVALID) {
         snd_stream_stop(core_st.bgm_stream);
         snd_stream_destroy(core_st.bgm_stream);
@@ -335,7 +364,7 @@ int vn_audio_play_se(const char *path_or_spec) {
     if(hnd == SFXHND_INVALID)
         return (core_st.audio_ready && path_or_spec && path_or_spec[0] != '\0') ? -1 : 0;
 
-    snd_sfx_play(hnd, 200, 128);
+    snd_sfx_play(hnd, UI_SE_VOL, 128);
     return 0;
 }
 
@@ -492,7 +521,7 @@ static int voice_stream_start(const char *path) {
         snd_stream_start_adpcm(core_st.voice_stream, rate, 0);
     else
         snd_stream_start(core_st.voice_stream, rate, 0);
-    snd_stream_volume(core_st.voice_stream, 225);
+    snd_stream_volume(core_st.voice_stream, VOICE_VOL);
     core_st.voice_hold = 2U;
     lip_load(path, (uint32_t)(((uint64_t)samples * 1000U) / rate));
     dbglog(DBG_INFO, "kosvn_audio: voice '%s' %luHz %lu samples (%s stream, lip %d)\n",
@@ -578,7 +607,7 @@ int vn_audio_play_voice(const char *path_or_spec) {
     if(hnd == SFXHND_INVALID)
         return -1;
 
-    core_st.voice_chan = snd_sfx_play(hnd, 225, 128);
+    core_st.voice_chan = snd_sfx_play(hnd, VOICE_VOL, 128);
     return (core_st.voice_chan >= 0) ? 0 : -1;
 }
 
@@ -609,7 +638,7 @@ void vn_audio_update(void) {
         } else {
             core_st.bgm_fade_left -= step;
             snd_stream_volume(core_st.bgm_stream,
-                              (int)((150U * core_st.bgm_fade_left) / core_st.bgm_fade_ms));
+                              (int)(((uint32_t)BGM_VOL * core_st.bgm_fade_left) / core_st.bgm_fade_ms));
         }
     }
     /* No poll for 2 frames after a start: the buffer is prefilled, and until
@@ -638,6 +667,7 @@ int vn_init(const vn_config_t *cfg) {
 
     memset(&core_st, 0, sizeof(core_st));
     core_st.bgm_stream = SND_STREAM_INVALID;
+    core_st.bgm_id = -1;
     core_st.voice_stream = SND_STREAM_INVALID;
     core_st.voice_chan = -1;
 
@@ -803,6 +833,7 @@ static void capture_pos(vn_story_pos_t *p) {
     vn_copy_str(p->bg_name, sizeof(p->bg_name), vn_gfx_get_bg_name());
     vn_copy_str(p->bgm_name, sizeof(p->bgm_name), vn_audio_get_bgm_name());
     p->bg_line1 = vn_script_get_bg_line1();
+    p->track0_line1 = vn_script_get_track0_line1();
     local_bits_store(p);
 }
 
@@ -831,7 +862,7 @@ static int resume_pos(const vn_story_pos_t *p) {
             return -1;
     }
     vn_bg_set(p->bg_name);
-    vn_script_replay_scene(p->script_line, p->bg_line1);
+    vn_script_replay_scene(p->script_line, p->bg_line1, p->track0_line1);
     if(p->bgm_name[0] != '\0')
         vn_audio_play_bgm(p->bgm_name);
     else
@@ -913,6 +944,7 @@ static void handle_save(int slot) {
     vn_copy_str(st.script_path, sizeof(st.script_path), vn_script_get_path());
     vn_copy_str(st.bg_name, sizeof(st.bg_name), vn_gfx_get_bg_name());
     st.bg_line1 = vn_script_get_bg_line1();
+    st.track0_line1 = vn_script_get_track0_line1();
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         vn_copy_str(st.char_names[i], sizeof(st.char_names[i]),
                     vn_gfx_get_char_name((vn_sprite_pos_t)i));
@@ -975,6 +1007,7 @@ static int handle_load(int slot) {
     vn_copy_str(p.bg_name, sizeof(p.bg_name), st.bg_name);
     vn_copy_str(p.bgm_name, sizeof(p.bgm_name), st.bgm_name);
     p.bg_line1 = st.bg_line1;
+    p.track0_line1 = st.track0_line1;
 
     /* resume_pos reloads the script, so import the call stack afterwards. */
     reset_presentation();

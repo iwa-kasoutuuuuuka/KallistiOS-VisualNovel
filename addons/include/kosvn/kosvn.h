@@ -25,7 +25,7 @@ __BEGIN_DECLS
 #define VN_MAX_CALL_DEPTH  8
 #define VN_BACKLOG_SIZE    32
 #define VN_SAVE_MAGIC      0x4B564E32U /* "KVN2" */
-#define VN_SAVE_VERSION    7U
+#define VN_SAVE_VERSION    8U
 #define VN_SAVE_SLOTS      4      /* VMU files <app>00..03, about 9 blocks each */
 #define VN_MAX_STORIES     3      /* parallel stories (STORY_DEF), e.g. two heroes */
 
@@ -87,6 +87,7 @@ typedef struct vn_story_pos {
     char     bgm_name[64];
     uint32_t local_bits[4];   /* STORY_LOCAL_BITS range (bit 0 = range start) */
     uint32_t bg_line1;        /* 1 + line of the BG command that was really shown, 0 = unknown */
+    uint32_t track0_line1;    /* 1 + line of the OVERLAY_TRACK 0 running, 0 = none */
 } vn_story_pos_t;
 
 typedef struct vn_save_state {
@@ -110,6 +111,7 @@ typedef struct vn_save_state {
     vn_story_pos_t stories[VN_MAX_STORIES];    /* where each story was left */
     char           label[48];                  /* slot list: script + start of the line (Shift-JIS) */
     uint32_t       bg_line1;                   /* 1 + line of the BG really shown, 0 = unknown */
+    uint32_t       track0_line1;               /* 1 + line of the OVERLAY_TRACK 0 running */
 } vn_save_state_t;
 
 /* Data path remap: files whose path starts with <from> are opened at <to> +
@@ -139,7 +141,8 @@ int  vn_char_set(vn_sprite_pos_t pos, const char *asset_spec);
 void vn_char_clear(vn_sprite_pos_t pos);
 void vn_char_clear_all(void);
 void vn_fx_fade(uint32_t target_argb, uint32_t duration_ms);
-void vn_fx_reset(void);             /* no fade (title / load / new script) */
+void vn_fx_reset(void);
+void vn_fx_wipe(int mode, uint32_t ms);  /* 1 close to black, 2 open (4-blade clockwise wipe) */             /* no fade (title / load / new script) */
 void vn_fx_shake(float amplitude, uint32_t duration_ms);
 bool vn_fx_is_busy(void);
 int  vn_cutin_set(const char *asset_spec);

@@ -10,6 +10,7 @@
 #include <malloc.h>
 #include <kos/dbglog.h>
 #include <dc/pvr.h>
+#include <math.h>
 
 #include "kosvn_internal.h"
 
@@ -55,6 +56,9 @@ static struct {
     vn_tex_t             bg_prev;          /* BG <path> <ms>: picture fading out */
     bool                 has_bg_prev;
     uint32_t             xfade_elapsed_ms, xfade_ms;
+    bool                 xfade_wipe;       /* BG <p> <ms> wipe: old picture in shrinking blades */
+    int                  wipe_mode;        /* WIPE: 0 none, 1 close (to black), 2 open */
+    uint32_t             wipe_elapsed_ms, wipe_ms;
     vn_sprite_slot_t     sprites[VN_MAX_SPRITES];
     bool                 has_cutin;
     vn_tex_t             cutin_tex;
@@ -815,7 +819,9 @@ int vn_bg_set(const char *asset_spec) {
 
 int vn_bg_crossfade(const char *asset_spec) {
     const char *sp = asset_spec ? strchr(asset_spec, ' ') : NULL;
-    return bg_set_ms(asset_spec, sp ? (uint32_t)atoi(sp + 1) : 0U);
+    int rc = bg_set_ms(asset_spec, sp ? (uint32_t)atoi(sp + 1) : 0U);
+    gfx_st.xfade_wipe = gfx_st.has_bg_prev && sp && strstr(sp, "wipe") != NULL;
+    return rc;
 }
 
 static int bg_set_ms(const char *spec_in, uint32_t ms) {
@@ -943,6 +949,7 @@ void vn_fx_fade(uint32_t target_argb, uint32_t duration_ms) {
 
 /* New script / title / load: no fade left over from before. */
 void vn_fx_reset(void) {
+    gfx_st.wipe_mode = 0;
     gfx_st.fade_alpha = gfx_st.fade_start = gfx_st.fade_target = 0.0f;
     gfx_st.fade_elapsed_ms = gfx_st.fade_duration_ms = 0U;
 }
@@ -958,13 +965,21 @@ void vn_fx_shake(float amplitude, uint32_t duration_ms) {
 }
 
 bool vn_fx_is_busy(void) {
-    return gfx_st.has_bg_prev ||
+    return gfx_st.has_bg_prev || gfx_st.wipe_mode != 0 ||
            (gfx_st.fade_duration_ms > 0 && gfx_st.fade_elapsed_ms < gfx_st.fade_duration_ms) ||
            (gfx_st.shake_duration_ms > 0 && gfx_st.shake_elapsed_ms < gfx_st.shake_duration_ms);
 }
 
 void vn_gfx_update(uint32_t dt_ms) {
     vn_overlay_update(dt_ms);
+    if(gfx_st.wipe_mode) {
+        gfx_st.wipe_elapsed_ms += dt_ms;
+        if(gfx_st.wipe_elapsed_ms >= gfx_st.wipe_ms) {
+            if(gfx_st.wipe_mode == 1)
+                vn_fx_fade(0xFF000000U, 0U);  /* closed: stay black */
+            gfx_st.wipe_mode = 0;
+        }
+    }
     if(gfx_st.has_bg_prev) {
         gfx_st.xfade_elapsed_ms += dt_ms;
         if(gfx_st.xfade_elapsed_ms >= gfx_st.xfade_ms)
@@ -1126,6 +1141,95 @@ void vn_gfx_draw_txr_quad4(pvr_list_t list, const vn_tex_t *tex, const float xs[
     }
 }
 
+/* ---- WIPE: a 4-blade clockwise "pinwheel" (PS cyberspace shutter) -------
+   Centre (160,121) in PS pixels; each blade's edge point moves 7 px a frame
+   along the screen border from its start, round the corner, to its end. */
+static const float wipe_blade[4][7] = {   /* start x,y  corner x,y  end x,y  first leg */
+    { 160, 240,   0, 240,   0, 121, 160 },
+    {   0, 121,   0,   0, 160,   0, 121 },
+    { 160,   0, 320,   0, 320, 121, 160 },
+    { 320, 121, 320, 240, 160, 240, 121 },
+};
+
+/* Fill one blade: close = the part swept so far (C, S, [K], P), open = the
+   part still to sweep (C, P, [K], E). Writes a fan as 4 points (PS px). */
+static int wipe_poly(int b, float s, bool open, float *xs, float *ys) {
+    const float *q = wipe_blade[b];
+    float leg = q[6];
+    float l2 = (float)(fabsf(q[4] - q[2]) + fabsf(q[5] - q[3]));
+    if(s < 0.0f) s = 0.0f;
+    if(s > leg + l2) s = leg + l2;
+    float px, py;
+    if(s < leg) {
+        float t = s / leg;
+        px = q[0] + (q[2] - q[0]) * t;
+        py = q[1] + (q[3] - q[1]) * t;
+    } else {
+        float t = (s - leg) / l2;
+        px = q[2] + (q[4] - q[2]) * t;
+        py = q[3] + (q[5] - q[3]) * t;
+    }
+    int n = 0;
+    xs[n] = 160.0f; ys[n++] = 121.0f;
+    if(!open) {
+        xs[n] = q[0]; ys[n++] = q[1];
+        if(s >= leg) { xs[n] = q[2]; ys[n++] = q[3]; }
+        xs[n] = px; ys[n++] = py;
+    } else {
+        xs[n] = px; ys[n++] = py;
+        if(s < leg) { xs[n] = q[2]; ys[n++] = q[3]; }
+        xs[n] = q[4]; ys[n++] = q[5];
+    }
+    return n;
+}
+
+/* Draw a fan (centre first) of 3 or 4 points as one strip, flat colour or
+   textured with UV = screen position (tex: a 320x240 picture in its texture). */
+static void wipe_draw_fan(const float *fx, const float *fy, int n, const vn_tex_t *tex,
+                          float z, uint32_t argb, float sx, float sy) {
+    /* fan C,A,B[,D] -> strip A,C,B,D (D = B for a triangle) */
+    int idx[4] = { 1, 0, 2, n == 4 ? 3 : 2 };
+    float xs[4], ys[4];
+    for(int k = 0; k < 4; k++) {
+        xs[k] = fx[idx[k]] * 2.0f + sx;
+        ys[k] = fy[idx[k]] * 2.0f + sy;
+    }
+    pvr_vertex_t vert;
+    if(tex) {
+        pvr_poly_cxt_t cxt;
+        pvr_poly_hdr_t hdr __attribute__((aligned(32)));
+        pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY, tex->fmt, tex->width, tex->height, tex->vram_ptr,
+                         PVR_FILTER_BILINEAR);
+        cxt.gen.culling = PVR_CULLING_NONE;
+        pvr_poly_compile(&hdr, &cxt);
+        pvr_prim(&hdr, sizeof(hdr));
+    } else {
+        pvr_prim(&gfx_st.col_hdr_tr, sizeof(gfx_st.col_hdr_tr));
+    }
+    float uw = tex && tex->img_w ? (float)tex->img_w / (float)tex->width : 1.0f;
+    float vh = tex && tex->img_h ? (float)tex->img_h / (float)tex->height : 1.0f;
+    for(int k = 0; k < 4; k++) {
+        vert.flags = (k == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+        vert.x = xs[k]; vert.y = ys[k]; vert.z = z;
+        vert.u = fx[idx[k]] / 320.0f * uw;
+        vert.v = fy[idx[k]] / 240.0f * vh;
+        vert.argb = argb; vert.oargb = 0;
+        pvr_prim(&vert, sizeof(vert));
+    }
+}
+
+/* WIPE close|open <ms>: close ends on a black screen (the fade overlay is set
+   to opaque black), open starts from black and reveals the picture. */
+void vn_fx_wipe(int mode, uint32_t ms) {
+    gfx_st.wipe_mode = (ms > 0U) ? mode : 0;
+    gfx_st.wipe_elapsed_ms = 0U;
+    gfx_st.wipe_ms = ms;
+    if(mode == 2)
+        vn_fx_fade(0x00000000U, 0U);      /* the blades cover what the fade did */
+    else if(mode == 1 && ms == 0U)
+        vn_fx_fade(0xFF000000U, 0U);
+}
+
 void vn_gfx_render_frame(void) {
     static const float sprite_cx[VN_MAX_SPRITES] = { 145.0f, 320.0f, 495.0f };
     float sx = gfx_st.shake_x;
@@ -1148,7 +1252,15 @@ void vn_gfx_render_frame(void) {
     pvr_list_finish();
 
     pvr_list_begin(PVR_LIST_TR_POLY);
-    if(gfx_st.has_bg_prev && gfx_st.xfade_ms > 0U) {
+    if(gfx_st.has_bg_prev && gfx_st.xfade_ms > 0U && gfx_st.xfade_wipe) {
+        /* wipe: the old picture in the blades still to sweep */
+        float sw = (float)(gfx_st.xfade_elapsed_ms * 60U / 1000U) * 7.0f;
+        float fx[4], fy[4];
+        for(int b = 0; b < 4; b++) {
+            int n = wipe_poly(b, sw, true, fx, fy);
+            wipe_draw_fan(fx, fy, n, &gfx_st.bg_prev, 9.0f, 0xFFFFFFFFU, sx, sy);
+        }
+    } else if(gfx_st.has_bg_prev && gfx_st.xfade_ms > 0U) {
         /* crossfade: the old picture on top, fading out */
         const vn_tex_t *pt = &gfx_st.bg_prev;
         float u1 = pt->img_w ? (float)pt->img_w / (float)pt->width : 1.0f;
@@ -1183,6 +1295,15 @@ void vn_gfx_render_frame(void) {
 
     vn_text_render_to_pvr();
 
+    if(gfx_st.wipe_mode) {
+        uint32_t k = gfx_st.wipe_elapsed_ms * 60U / 1000U;
+        float sw = (float)(gfx_st.wipe_mode == 2 ? (k > 0U ? k - 1U : 0U) : k) * 7.0f;
+        float fx[4], fy[4];
+        for(int b = 0; b < 4; b++) {
+            int n = wipe_poly(b, sw, gfx_st.wipe_mode == 2, fx, fy);
+            wipe_draw_fan(fx, fy, n, NULL, 49.0f, 0xFF000000U, 0.0f, 0.0f);
+        }
+    }
     if(gfx_st.fade_alpha > 0.004f) {
         uint8_t fa = (uint8_t)(gfx_st.fade_alpha * 255.0f);
         uint32_t fargb = ((uint32_t)fa << 24) | gfx_st.fade_rgb;

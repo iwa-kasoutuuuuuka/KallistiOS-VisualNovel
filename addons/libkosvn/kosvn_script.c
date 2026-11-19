@@ -29,6 +29,7 @@ static struct {
     bool             waiting_fx;
     uint32_t         wait_ms;      /* >0: WAIT timer, otherwise WAIT_FX */
     uint32_t         bg_line1;     /* 1 + line of the last BG executed, 0 = none */
+    uint32_t         track0_line1; /* 1 + line of the OVERLAY_TRACK 0 running, 0 = none */
     vn_label_entry_t labels[VN_MAX_LABELS];
     int              label_count;
     int32_t          flags[VN_MAX_FLAGS];
@@ -216,6 +217,7 @@ void vn_script_unload(void) {
     vm_st.ended = true;
     vm_st.waiting_fx = false;
     vm_st.bg_line1 = 0U;
+    vm_st.track0_line1 = 0U;
     vm_st.wait_ms = 0U;
     vm_st.path[0] = '\0';
     vn_text_set_site_badge("");
@@ -557,13 +559,14 @@ bool vn_script_is_ended(void) { return vm_st.ended; }
    (the BG and the overlays / speaker set after it), without running anything
    else. The BG from an earlier script is restored by the caller. */
 uint32_t vn_script_get_bg_line1(void) { return vm_st.bg_line1; }
+uint32_t vn_script_get_track0_line1(void) { return vm_st.track0_line1; }
 
 /* Rebuild the picture of a saved moment. bg_line1 (1 + line of the BG command
    that was really executed) is used when known: the BG written just above the
    saved line is often not the one on screen (hub labels are reached by GOTO
    from other places). That BG and the OVERLAY lines right after it are
    replayed, then NAME / TEXTBOX from the text above the saved line. */
-void vn_script_replay_scene(uint32_t line, uint32_t bg_line1) {
+void vn_script_replay_scene(uint32_t line, uint32_t bg_line1, uint32_t track0_line1) {
     if(line > vm_st.line_count)
         line = vm_st.line_count;
     uint32_t from = 0U;
@@ -633,6 +636,16 @@ void vn_script_replay_scene(uint32_t line, uint32_t bg_line1) {
         else
             vn_text_set_area(0, 0, 0);
     }
+    /* a sprite animation running in slot 0 (e.g. a character drawn over the
+       picture by OVERLAY_TRACK, which is not right after the BG) */
+    if(track0_line1 > 0U && track0_line1 - 1U < vm_st.line_count) {
+        char cmd[32];
+        const char *arg = split_cmd(vm_st.lines[track0_line1 - 1U], cmd, sizeof(cmd));
+        if(strcmp(cmd, "OVERLAY_TRACK") == 0 && atoi(arg) == 0) {
+            vn_overlay_track(arg);
+            vm_st.track0_line1 = track0_line1;
+        }
+    }
 }
 
 int vn_script_advance(void) {
@@ -659,6 +672,7 @@ int vn_script_advance(void) {
         } else if(strcmp(cmd, "BG") == 0) {
             /* BG <path> [ms] : ms = crossfade (PS \d 2), cut while skipping */
             vm_st.bg_line1 = line_idx + 1U;
+            vm_st.track0_line1 = 0U;
             vn_overlay_clear_all();
             if(vn_core_is_skipping())
                 vn_bg_set(arg);
@@ -668,11 +682,15 @@ int vn_script_advance(void) {
             vn_overlay_command(arg);
         } else if(strcmp(cmd, "OVERLAY_TRACK") == 0) {
             vn_overlay_track(arg);
+            if(atoi(arg) == 0)
+                vm_st.track0_line1 = line_idx + 1U;
         } else if(strcmp(cmd, "OVERLAY_CLEAR") == 0) {
             if(arg[0] >= '0' && arg[0] <= '9')
                 vn_overlay_clear(atoi(arg));
             else
                 vn_overlay_clear_all();
+            if(!(arg[0] >= '0' && arg[0] <= '9') || atoi(arg) == 0)
+                vm_st.track0_line1 = 0U;
         } else if(strcmp(cmd, "CHAR") == 0) {
             char pos_tok[16];
             const char *spec = split_cmd(arg, pos_tok, sizeof(pos_tok));
@@ -906,6 +924,12 @@ int vn_script_advance(void) {
             unsigned long ms = 0;
             if(sscanf(arg, "%lx %lu", &col, &ms) == 2)
                 vn_fx_fade((uint32_t)col, (uint32_t)ms);
+        } else if(strcmp(cmd, "WIPE") == 0) {
+            /* WIPE close|open <ms> : 4-blade clockwise shutter (cut while skipping) */
+            char m[8] = {0};
+            unsigned long ms = 0;
+            sscanf(arg, "%7s %lu", m, &ms);
+            vn_fx_wipe(strcmp(m, "open") == 0 ? 2 : 1, vn_core_is_skipping() ? 0U : (uint32_t)ms);
         } else if(strcmp(cmd, "WAIT_FX") == 0) {
             vm_st.waiting_fx = true;
             vm_st.cur_cmd_line = line_idx;

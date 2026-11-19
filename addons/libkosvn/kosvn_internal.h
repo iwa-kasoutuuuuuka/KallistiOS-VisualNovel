@@ -58,8 +58,9 @@ void        vn_story_reset(void);
 void        vn_core_request_load(void);
 void        vn_core_swallow_input(void);
 FILE       *vn_fopen(const char *path, const char *mode);   /* fopen with vn_set_path_remap */
-void        vn_script_replay_scene(uint32_t line, uint32_t bg_line1);
+void        vn_script_replay_scene(uint32_t line, uint32_t bg_line1, uint32_t track0_line1);
 uint32_t    vn_script_get_bg_line1(void);
+uint32_t    vn_script_get_track0_line1(void);
 
 /* Internal script hooks (kosvn_script.c) */
 int         vn_script_jump_line(uint32_t line);
