@@ -25,7 +25,7 @@ __BEGIN_DECLS
 #define VN_MAX_CALL_DEPTH  8
 #define VN_BACKLOG_SIZE    32
 #define VN_SAVE_MAGIC      0x4B564E32U /* "KVN2" */
-#define VN_SAVE_VERSION    8U
+#define VN_SAVE_VERSION    9U
 #define VN_SAVE_SLOTS      4      /* VMU files <app>00..03, about 9 blocks each */
 #define VN_MAX_STORIES     3      /* parallel stories (STORY_DEF), e.g. two heroes */
 
@@ -112,6 +112,7 @@ typedef struct vn_save_state {
     char           label[48];                  /* slot list: script + start of the line (Shift-JIS) */
     uint32_t       bg_line1;                   /* 1 + line of the BG really shown, 0 = unknown */
     uint32_t       track0_line1;               /* 1 + line of the OVERLAY_TRACK 0 running */
+    uint32_t       save_seq;                   /* newer copy of a slot wins (A/B files) */
 } vn_save_state_t;
 
 /* Data path remap: files whose path starts with <from> are opened at <to> +
@@ -204,6 +205,8 @@ bool        vn_site_is_locked(int site_id);
 /* VMU save/load & LCD */
 int  vn_vmu_save(int slot, const vn_save_state_t *state);
 int  vn_vmu_load(int slot, vn_save_state_t *state_out);
+int  vn_vmu_save_cfg(const void *data, int len);   /* settings file <ID>CF */
+int  vn_vmu_load_cfg(void *data, int len);
 void vn_vmu_draw_logo(const char *short_tag);
 /* Save file icon (32x32, 4 bpp, 16-colour ARGB4444 palette) and the names the
    Dreamcast file manager shows; NULL keeps the built-in ones. */

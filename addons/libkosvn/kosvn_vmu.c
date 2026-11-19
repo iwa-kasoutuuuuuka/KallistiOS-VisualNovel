@@ -16,10 +16,22 @@
 
 #include "kosvn_internal.h"
 
-/* The memory card found by maple_enum_type: any port (A-D) and slot (1-2). */
-static void build_vmu_path(const maple_device_t *vmud, int slot, char *out, size_t out_sz) {
-    int s = (slot < 0) ? 0 : (slot % 10);
-    snprintf(out, out_sz, "/vmu/%c%d/KOSVN%02d", 'a' + vmud->port, vmud->unit, s);
+/* Files on the memory card found by maple_enum_type (any port A-D, slot 1-2),
+   named after the game's app_id (up to 6 letters / digits, upper case) so two
+   libkosvn games do not share files: <ID><slot>A / <ID><slot>B and <ID>CF. */
+static void vmu_file_path(const maple_device_t *vmud, const char *tail, char *out, size_t out_sz) {
+    char id[8];
+    const char *a = vn_core_get_app_id();
+    size_t n = 0;
+    for(; a && *a && n < 6; a++) {
+        char c = *a;
+        if(c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            id[n++] = c;
+    }
+    if(n == 0) { memcpy(id, "KOSVN", 5); n = 5; }
+    id[n] = '\0';
+    snprintf(out, out_sz, "/vmu/%c%d/%s%s", 'a' + vmud->port, vmud->unit, id, tail);
 }
 
 /* Game-supplied icon / names (vn_vmu_set_icon / vn_vmu_set_desc) */
@@ -80,16 +92,8 @@ static void generate_save_icon(uint16_t pal[16], uint8_t icon[512]) {
     }
 }
 
-int vn_vmu_save(int slot, const vn_save_state_t *state) {
-    if(!state)
-        return -1;
-
-    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
-    if(!vmud) {
-        dbglog(DBG_WARNING, "kosvn_vmu: no VMU memcard detected for save\n");
-        return -1;
-    }
-
+/* Write one package (header + icon + data) to path. 0 ok, -2 write failed. */
+static int write_pkg(const char *path, const char *desc_long, const void *data, int len) {
     uint16_t icon_pal[16];
     uint8_t icon_data[512];
     generate_save_icon(icon_pal, icon_data);
@@ -97,110 +101,166 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
     vmu_pkg_t pkg;
     memset(&pkg, 0, sizeof(pkg));
     vn_copy_str(pkg.desc_short, sizeof(pkg.desc_short), desc_short_s);
-    snprintf(pkg.desc_long, sizeof(pkg.desc_long), "%s %d", desc_long_prefix, slot + 1);
+    vn_copy_str(pkg.desc_long, sizeof(pkg.desc_long), desc_long);
     vn_copy_str(pkg.app_id, sizeof(pkg.app_id), vn_core_get_app_id());
     pkg.icon_cnt = 1;
     pkg.icon_anim_speed = 0;
     pkg.eyecatch_type = VMUPKG_EC_NONE;
-    pkg.data_len = (int)sizeof(vn_save_state_t);
+    pkg.data_len = len;
     memcpy(pkg.icon_pal, icon_pal, sizeof(icon_pal));
     pkg.icon_data = icon_data;
     pkg.eyecatch_data = NULL;
-    pkg.data = (const uint8_t *)state;
+    pkg.data = (const uint8_t *)data;
 
     uint8_t *pkg_out = NULL;
     int pkg_size = 0;
     if(vmu_pkg_build(&pkg, &pkg_out, &pkg_size) < 0 || !pkg_out) {
         dbglog(DBG_ERROR, "kosvn_vmu: vmu_pkg_build failed\n");
-        return -1;
+        return -2;
     }
-
-    char path[32];
-    build_vmu_path(vmud, slot, path, sizeof(path));
-    /* O_META: write the package as built. Without it the current fs_vmu
-       treats the data as headerless, and on reading it strips the header,
-       so vmu_pkg_parse() in vn_vmu_load() could never succeed. */
+    /* O_META: write the package as built (without it fs_vmu adds / strips the
+       header itself, and vmu_pkg_parse() on reading could never succeed). */
     file_t fd = fs_open(path, O_WRONLY | O_TRUNC | O_META);
     if(fd == FILEHND_INVALID) {
         free(pkg_out);
         dbglog(DBG_ERROR, "kosvn_vmu: open('%s') for writing failed\n", path);
         return -2;
     }
-
     ssize_t written = fs_write(fd, pkg_out, (size_t)pkg_size);
     int close_rc = fs_close(fd);
     free(pkg_out);
-
     if(written != (ssize_t)pkg_size || close_rc < 0) {
-        dbglog(DBG_ERROR, "kosvn_vmu: write failed %d/%d (close %d)\n",
-               (int)written, pkg_size, close_rc);
+        dbglog(DBG_ERROR, "kosvn_vmu: write failed %d/%d (close %d)\n", (int)written, pkg_size, close_rc);
         return -2;
     }
-
     dbglog(DBG_INFO, "kosvn_vmu: saved %d bytes to %s\n", pkg_size, path);
     return 0;
 }
 
-int vn_vmu_load(int slot, vn_save_state_t *state_out) {
-    if(!state_out)
-        return -1;
-
-    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
-    if(!vmud) {
-        dbglog(DBG_WARNING, "kosvn_vmu: no VMU memcard detected for load\n");
-        return -1;
-    }
-
-    char path[32];
-    build_vmu_path(vmud, slot, path, sizeof(path));
+/* Read the data of one package into out (exactly len bytes). 0 ok, -1 not there / bad. */
+static int read_pkg(const char *path, void *out, int len) {
     file_t fd = fs_open(path, O_RDONLY | O_META);   /* raw: keep the package header */
-    if(fd == FILEHND_INVALID) {
-        dbglog(DBG_WARNING, "kosvn_vmu: save file '%s' not found\n", path);
+    if(fd == FILEHND_INVALID)
         return -1;
-    }
-
-    /* VMU blocks fit comfortably within 128 KB max */
     size_t max_sz = 16384U;
     uint8_t *buf = (uint8_t *)malloc(max_sz);
     if(!buf) {
         fs_close(fd);
         return -1;
     }
-
     ssize_t got = fs_read(fd, buf, max_sz);
     fs_close(fd);
-    size_t fsz = got > 0 ? (size_t)got : 0U;
-    if(fsz == 0) {
-        free(buf);
-        return -1;
-    }
-
     vmu_pkg_t pkg;
-    if(vmu_pkg_parse(buf, fsz, &pkg) < 0) {
+    if(got <= 0 || vmu_pkg_parse(buf, (size_t)got, &pkg) < 0 || pkg.data_len != len || !pkg.data) {
         free(buf);
-        dbglog(DBG_ERROR, "kosvn_vmu: vmu_pkg_parse failed\n");
         return -1;
     }
-
-    if(pkg.data_len != (int)sizeof(vn_save_state_t) || !pkg.data) {
-        free(buf);
-        dbglog(DBG_ERROR, "kosvn_vmu: incompatible save payload size %d\n", pkg.data_len);
-        return -1;
-    }
-
-    vn_save_state_t tmp;
-    memcpy(&tmp, pkg.data, sizeof(vn_save_state_t));
+    memcpy(out, pkg.data, (size_t)len);
     free(buf);
+    return 0;
+}
 
-    if(tmp.magic != VN_SAVE_MAGIC || tmp.version != VN_SAVE_VERSION) {
-        dbglog(DBG_ERROR, "kosvn_vmu: invalid save magic/version\n");
+static int read_state(const char *path, vn_save_state_t *st) {
+    if(read_pkg(path, st, (int)sizeof(*st)) < 0)
+        return -1;
+    if(st->magic != VN_SAVE_MAGIC || st->version != VN_SAVE_VERSION) {
+        dbglog(DBG_WARNING, "kosvn_vmu: %s: other save version\n", path);
         return -1;
     }
-
-    memcpy(state_out, &tmp, sizeof(vn_save_state_t));
-    dbglog(DBG_INFO, "kosvn_vmu: loaded slot %d (line %lu)\n",
-           slot, (unsigned long)state_out->script_line);
     return 0;
+}
+
+/* Each slot has two files, <ID><n>A and <ID><n>B. A save goes to the one that
+   does not hold the newest copy, and only after it is written is the older one
+   deleted, so a card pulled out while saving still has the previous save. The
+   newer valid copy (save_seq) is the one loaded. */
+static int slot_newest(const maple_device_t *vmud, int slot, vn_save_state_t *st, int *which) {
+    char path[40], tail[8];
+    vn_save_state_t a, b;
+    snprintf(tail, sizeof(tail), "%dA", slot);
+    vmu_file_path(vmud, tail, path, sizeof(path));
+    bool ha = read_state(path, &a) == 0;
+    snprintf(tail, sizeof(tail), "%dB", slot);
+    vmu_file_path(vmud, tail, path, sizeof(path));
+    bool hb = read_state(path, &b) == 0;
+    if(!ha && !hb)
+        return -1;
+    bool use_b = hb && (!ha || b.save_seq > a.save_seq);
+    if(st)
+        *st = use_b ? b : a;
+    if(which)
+        *which = use_b ? 1 : 0;
+    return 0;
+}
+
+int vn_vmu_save(int slot, const vn_save_state_t *state) {
+    if(!state)
+        return -1;
+    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
+    if(!vmud) {
+        dbglog(DBG_WARNING, "kosvn_vmu: no VMU memcard detected for save\n");
+        return -1;
+    }
+    int s = (slot < 0) ? 0 : (slot % 10);
+    vn_save_state_t prev;
+    int which = 1;                    /* no save yet: write A */
+    uint32_t seq = 0U;
+    if(slot_newest(vmud, s, &prev, &which) == 0)
+        seq = prev.save_seq;
+    vn_save_state_t st = *state;
+    st.save_seq = seq + 1U;
+    char path[40], old[40], tail[8], dl[40];
+    snprintf(tail, sizeof(tail), "%d%c", s, which ? 'A' : 'B');
+    vmu_file_path(vmud, tail, path, sizeof(path));
+    snprintf(tail, sizeof(tail), "%d%c", s, which ? 'B' : 'A');
+    vmu_file_path(vmud, tail, old, sizeof(old));
+    snprintf(dl, sizeof(dl), "%s %d", desc_long_prefix, slot + 1);
+    int rc = write_pkg(path, dl, &st, (int)sizeof(st));
+    if(rc < 0) {
+        /* no room for a second copy: overwrite in place (the old safety is lost) */
+        if(seq > 0U && write_pkg(old, dl, &st, (int)sizeof(st)) == 0)
+            return 0;
+        fs_unlink(path);              /* do not leave a half-written copy */
+        return rc;
+    }
+    fs_unlink(old);
+    return 0;
+}
+
+int vn_vmu_load(int slot, vn_save_state_t *state_out) {
+    if(!state_out)
+        return -1;
+    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
+    if(!vmud) {
+        dbglog(DBG_WARNING, "kosvn_vmu: no VMU memcard detected for load\n");
+        return -1;
+    }
+    int s = (slot < 0) ? 0 : (slot % 10);
+    if(slot_newest(vmud, s, state_out, NULL) < 0)
+        return -1;
+    dbglog(DBG_INFO, "kosvn_vmu: loaded slot %d (line %lu, save %lu)\n", slot,
+           (unsigned long)state_out->script_line, (unsigned long)state_out->save_seq);
+    return 0;
+}
+
+/* Settings file <ID>CF: len bytes chosen by the caller. */
+int vn_vmu_save_cfg(const void *data, int len) {
+    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
+    if(!vmud)
+        return -1;
+    char path[40], dl[40];
+    vmu_file_path(vmud, "CF", path, sizeof(path));
+    snprintf(dl, sizeof(dl), "%s settings", desc_long_prefix);
+    return write_pkg(path, dl, data, len);
+}
+
+int vn_vmu_load_cfg(void *data, int len) {
+    maple_device_t *vmud = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
+    if(!vmud)
+        return -1;
+    char path[40];
+    vmu_file_path(vmud, "CF", path, sizeof(path));
+    return read_pkg(path, data, len);
 }
 
 static void lcd_set_pixel(uint8_t bmp[192], int x, int y) {

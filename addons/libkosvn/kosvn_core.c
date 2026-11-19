@@ -28,6 +28,9 @@
 #define BGM_VOL          255
 #define VOICE_VOL        183
 #define UI_SE_VOL        163
+/* volumes scaled by the settings (0..7, 7 = the levels above) */
+#define BGM_VOL_NOW      ((BGM_VOL * (int)core_st.opt_bgm) / 7)
+#define VOICE_VOL_NOW    ((VOICE_VOL * (int)core_st.opt_voice) / 7)
 #define VN_SFX_CACHE_MAX 8
 
 typedef struct vn_sfx_entry {
@@ -41,6 +44,9 @@ static struct {
     char              title[64];
     char              app_id[20];
     uint32_t          text_speed_ms;
+    uint8_t           opt_text;              /* settings: 0 fast, 1 normal, 2 slow */
+    uint8_t           opt_bgm, opt_voice;    /* settings: volume 0..7 */
+    bool              opt_loaded;
     uint32_t          auto_advance_ms;
 
     uint64_t          last_ms;
@@ -129,6 +135,8 @@ static struct {
 #define SYS_TGT_STORY "@sys:story"   /* + digit */
 #define SYS_TGT_SLOT  "@sys:slot"    /* + digit */
 #define SYS_TGT_BACK  "@sys:back"
+#define SYS_TGT_OPT   "@sys:opt"
+#define SYS_TGT_OPTI  "@sys:opti"   /* + digit: settings row */
 
 /* 32-entry signed sine wave table scaled to [-12000, +12000] */
 static const int16_t sin32_lut[32] = {
@@ -219,7 +227,7 @@ int vn_audio_play_bgm(const char *path_or_spec) {
        strcmp(path_or_spec, core_st.bgm_spec) == 0) {
         core_st.bgm_fade_ms = core_st.bgm_fade_left = 0U;
         if(core_st.bgm_stream != SND_STREAM_INVALID)
-            snd_stream_volume(core_st.bgm_stream, BGM_VOL);
+            snd_stream_volume(core_st.bgm_stream, BGM_VOL_NOW);
         vn_copy_str(core_st.bgm_name, sizeof(core_st.bgm_name), core_st.bgm_spec);
         return 0;
     }
@@ -266,7 +274,7 @@ int vn_audio_play_bgm(const char *path_or_spec) {
     vn_copy_str(core_st.bgm_spec, sizeof(core_st.bgm_spec), path_or_spec);
     core_st.bgm_id = id;
     snd_stream_start(core_st.bgm_stream, rate, stereo);
-    snd_stream_volume(core_st.bgm_stream, BGM_VOL);
+    snd_stream_volume(core_st.bgm_stream, BGM_VOL_NOW);
     core_st.bgm_hold = 2U;    /* see vn_audio_update */
     dbglog(DBG_INFO, "kosvn_audio: BGM '%s' started\n", path_or_spec);
     return 0;
@@ -521,7 +529,7 @@ static int voice_stream_start(const char *path) {
         snd_stream_start_adpcm(core_st.voice_stream, rate, 0);
     else
         snd_stream_start(core_st.voice_stream, rate, 0);
-    snd_stream_volume(core_st.voice_stream, VOICE_VOL);
+    snd_stream_volume(core_st.voice_stream, VOICE_VOL_NOW);
     core_st.voice_hold = 2U;
     lip_load(path, (uint32_t)(((uint64_t)samples * 1000U) / rate));
     dbglog(DBG_INFO, "kosvn_audio: voice '%s' %luHz %lu samples (%s stream, lip %d)\n",
@@ -607,7 +615,7 @@ int vn_audio_play_voice(const char *path_or_spec) {
     if(hnd == SFXHND_INVALID)
         return -1;
 
-    core_st.voice_chan = snd_sfx_play(hnd, VOICE_VOL, 128);
+    core_st.voice_chan = snd_sfx_play(hnd, VOICE_VOL_NOW, 128);
     return (core_st.voice_chan >= 0) ? 0 : -1;
 }
 
@@ -638,7 +646,7 @@ void vn_audio_update(void) {
         } else {
             core_st.bgm_fade_left -= step;
             snd_stream_volume(core_st.bgm_stream,
-                              (int)(((uint32_t)BGM_VOL * core_st.bgm_fade_left) / core_st.bgm_fade_ms));
+                              (int)(((uint32_t)BGM_VOL_NOW * core_st.bgm_fade_left) / core_st.bgm_fade_ms));
         }
     }
     /* No poll for 2 frames after a start: the buffer is prefilled, and until
@@ -699,6 +707,8 @@ int vn_init(const vn_config_t *cfg) {
         vn_gfx_shutdown();
         return -1;
     }
+    core_st.opt_text = 1U;
+    core_st.opt_bgm = core_st.opt_voice = 7U;
     vn_text_set_speed(core_st.text_speed_ms);
 
     if(snd_stream_init() >= 0) {
@@ -916,7 +926,7 @@ static void switch_story(int id) {
 #define TXT_EMPTY_SLOT   "\x81\x69\x8b\xf3\x82\xab\x81\x6a"                                      /* （空き） */
 #define TXT_BACK         "\x96\xdf\x82\xe9"                                                      /* 戻る */
 
-enum { MENU_MAIN = 0, MENU_SAVE = 1, MENU_LOAD = 2 };
+enum { MENU_MAIN = 0, MENU_SAVE = 1, MENU_LOAD = 2, MENU_OPT = 3 };
 
 /* Copy at most max bytes of Shift-JIS text without splitting a 2-byte char. */
 static void sjis_head(char *dst, size_t dst_sz, const char *src, size_t max) {
@@ -1048,6 +1058,73 @@ static void go_title(void) {
     }
 }
 
+/* ---- settings (START menu): text speed, music and voice volume ------------
+   Kept on the memory card (vn_vmu_save_cfg) and read once at the first script. */
+typedef struct { uint8_t magic, text, bgm, voice; } vn_cfg_t;
+
+static void apply_settings(void) {
+    static const uint32_t pct[3] = { 50U, 100U, 200U };
+    uint32_t ms = (core_st.text_speed_ms * pct[core_st.opt_text % 3U]) / 100U;
+    vn_text_set_speed(ms > 0U ? ms : 1U);
+    if(core_st.bgm_playing && core_st.bgm_stream != SND_STREAM_INVALID && core_st.bgm_fade_ms == 0U)
+        snd_stream_volume(core_st.bgm_stream, BGM_VOL_NOW);
+    if(core_st.voice_streaming && core_st.voice_stream != SND_STREAM_INVALID)
+        snd_stream_volume(core_st.voice_stream, VOICE_VOL_NOW);
+}
+
+static void load_settings(void) {
+    vn_cfg_t c;
+    core_st.opt_loaded = true;
+    if(vn_vmu_load_cfg(&c, (int)sizeof(c)) == 0 && c.magic == 0xC5U) {
+        core_st.opt_text = c.text <= 2U ? c.text : 1U;
+        core_st.opt_bgm = c.bgm <= 7U ? c.bgm : 7U;
+        core_st.opt_voice = c.voice <= 7U ? c.voice : 7U;
+    }
+    apply_settings();
+}
+
+static void save_settings(void) {
+    vn_cfg_t c = { 0xC5U, core_st.opt_text, core_st.opt_bgm, core_st.opt_voice };
+    vn_vmu_save_cfg(&c, (int)sizeof(c));
+}
+
+static void open_opt_menu(int sel) {
+    static char rows[3][64];
+    static const char *speed[3] = { "\x91\xac\x82\xa2", "\x95\x81\x92\xca", "\x92\x78\x82\xa2" };
+    char bar[2][24];
+    uint8_t v[2] = { core_st.opt_bgm, core_st.opt_voice };
+    for(int k = 0; k < 2; k++) {
+        bar[k][0] = '\0';
+        for(int i = 0; i < 7; i++)
+            strcat(bar[k], i < v[k] ? "\x81\xa1" : "\x81\xa0");
+    }
+    snprintf(rows[0], sizeof(rows[0]), "\x95\xb6\x8e\x9a\x82\xcc\x91\xac\x82\xb3\x81\x40" "%s", speed[core_st.opt_text % 3U]);
+    snprintf(rows[1], sizeof(rows[1]), "\x82\x61\x82\x66\x82\x6c\x81\x40\x81\x40\x81\x40" "%s", bar[0]);
+    snprintf(rows[2], sizeof(rows[2]), "\x90\xba\x81\x45\x8c\xf8\x89\xca\x89\xb9\x81\x40" "%s", bar[1]);
+    vn_text_reveal_all();
+    vn_text_clear_choices();
+    vn_text_add_choice(rows[0], SYS_TGT_OPTI "0");
+    vn_text_add_choice(rows[1], SYS_TGT_OPTI "1");
+    vn_text_add_choice(rows[2], SYS_TGT_OPTI "2");
+    vn_text_add_choice(TXT_BACK, SYS_TGT_BACK);
+    vn_text_set_choice_cancel(SYS_TGT_BACK);
+    vn_text_move_choice(sel);
+    core_st.sys_menu = true;
+    core_st.menu_mode = MENU_OPT;
+}
+
+/* left / right (A = +1, wrapping) on a settings row */
+static void change_setting(int row, int d) {
+    if(row == 0)
+        core_st.opt_text = (uint8_t)((core_st.opt_text + 3 + d) % 3);
+    else if(row == 1)
+        core_st.opt_bgm = (uint8_t)((core_st.opt_bgm + 8 + d) % 8);
+    else if(row == 2)
+        core_st.opt_voice = (uint8_t)((core_st.opt_voice + 8 + d) % 8);
+    apply_settings();
+    open_opt_menu(row);
+}
+
 /* START menu, drawn with the choice cards. Shift-JIS labels. */
 static void open_sys_menu(void) {
     core_st.sys_menu_over_choice = vn_text_get_choice_count() > 0;
@@ -1063,6 +1140,7 @@ static void open_sys_menu(void) {
             vn_text_add_choice(core_st.story_label[i], tgt[i]);
         }
     }
+    vn_text_add_choice("\x90\xdd\x92\xe8", SYS_TGT_OPT);
     if(core_st.title_script[0] != '\0')
         vn_text_add_choice("\x83\x5e\x83\x43\x83\x67\x83\x8b\x82\xd6\x96\xdf\x82\xe9",
                            SYS_TGT_TITLE);                                           /* タイトルへ戻る */
@@ -1125,6 +1203,14 @@ static void close_sys_menu(void) {
 }
 
 static void sys_menu_input(uint32_t pressed) {
+    if(core_st.menu_mode == MENU_OPT && (pressed & (CONT_DPAD_LEFT | CONT_DPAD_RIGHT))) {
+        int row = vn_text_get_selected_choice();
+        if(row < 3) {
+            change_setting(row, (pressed & CONT_DPAD_LEFT) ? -1 : 1);
+            vn_audio_play_se(core_st.se_cursor);
+        }
+        return;
+    }
     if(pressed & CONT_DPAD_UP) {
         vn_text_move_choice(-1);
         vn_audio_play_se(core_st.se_cursor);
@@ -1149,7 +1235,14 @@ static void sys_menu_input(uint32_t pressed) {
     vn_copy_str(t, sizeof(t), tgt);
     vn_audio_play_se((strcmp(t, SYS_TGT_BACK) == 0 || strcmp(t, SYS_TGT_CLOSE) == 0)
                      ? core_st.se_cancel : core_st.se_decide);
-    if(strcmp(t, SYS_TGT_SAVE) == 0) {
+    if(strcmp(t, SYS_TGT_OPT) == 0) {
+        open_opt_menu(0);
+    } else if(strncmp(t, SYS_TGT_OPTI, strlen(SYS_TGT_OPTI)) == 0) {
+        change_setting(atoi(t + strlen(SYS_TGT_OPTI)), 1);
+    } else if(strcmp(t, SYS_TGT_BACK) == 0 && core_st.menu_mode == MENU_OPT) {
+        save_settings();
+        open_sys_menu_keep();
+    } else if(strcmp(t, SYS_TGT_SAVE) == 0) {
         open_slot_menu(MENU_SAVE);
     } else if(strcmp(t, SYS_TGT_LOAD) == 0) {
         open_slot_menu(MENU_LOAD);
@@ -1489,6 +1582,8 @@ int vn_run_script(const char *script_path) {
         return -1;
 
     vn_fx_reset();          /* e.g. the ending faded to black, then the title */
+    if(!core_st.opt_loaded)
+        load_settings();
     core_st.quit_requested = false;
     vn_script_advance();
 

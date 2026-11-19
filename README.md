@@ -75,7 +75,7 @@
 * **演出:** 背景のクロスフェード／羽根ワイプ（`BG <パス> <ms> [wipe]`）、黒い羽根のシャッター（`WIPE`）、重ね絵の枠指定クリアとトラック再生（`OVERLAY_CLEAR [枠]` / `OVERLAY_TRACK`）、口パクの人物指定（`SPEAKER` / `lip<N>` / `LIP_MAP`）
 * **音:** BGM のループ開始位置・曲番号・フェードアウト、場面の効果音（`SCENE_SE`）、ADPCM のボイスと `.LIP`
 * **スクリプト:** 1 ビットフラグ 4,608 個（`BIT` / `BIT_RANGE` / `IF_BIT` / `OPTION_BIT`）、`JUMP`、`MOVIE`、並行する話（`STORY_DEF` / `STORY` / `STORY_LOCAL_BITS` / `STORY_RESET`）、`SYSLOAD`、選択肢の地図表示（`MAP`）・`CANCEL`・`CHOICE_CURSOR`、絵に描かれた文字欄への対応（`TEXT_AREA` / `TEXTBOX`）
-* **システム:** 4 スロットのセーブ（`VN_SAVE_VERSION` 8）、VMU アイコン・ファイル名の設定、パスの読み替え（`vn_set_path_remap()`）、テスト用の自動プレイ（`autoplay` / `autoplay_slow`）
+* **システム:** 4 スロットのセーブ（`VN_SAVE_VERSION` 9、スロットごとに A/B の 2 ファイルで上書き中に抜いても前のセーブが残る）、START メニューの「設定」（文字の速さ・BGM・声の音量、VMU に保存）、VMU アイコン・ファイル名の設定、パスの読み替え（`vn_set_path_remap()`）、テスト用の自動プレイ（`autoplay` / `autoplay_slow`）
 * **安定化:** テクスチャの遅延解放（`vn_tex_free_later()`）など、実機専用の不具合への対処（第 11 章）
 
 ---
@@ -419,10 +419,10 @@ Dreamcast の PowerVR2 / AICA ハードウェアへ高速転送するため、�
 | **`Y` ボタン** | **バックログ (`BACKLOG`)** 履歴画面の開閉 |
 | **十字キー 上下** | 選択肢のカーソル移動 ／ バックログ表示中のスクロール |
 | **`R` トリガー（長押し）** | **スキップ (`SKIP`)** 早送り |
-| **`L` トリガー + `A`** | **VMU スロット 0 (`/vmu/a1/KOSVN00`) へクイックセーブ**（`KVN2` 形式・`VN_SAVE_VERSION` 8、古い版のセーブは読み込めません：全サイト状態・コールスタック・256 フラグ・BGM/立ち絵/カットインを一括保存） |
+| **`L` トリガー + `A`** | **最後に使ったスロットへクイックセーブ**（`VN_SAVE_VERSION` 9、古い版のセーブは読み込めません：全サイト状態・コールスタック・256 フラグ・BGM/立ち絵/カットインを一括保存） |
 | **`L` トリガー + `B`** | **VMU スロット 0 からクイックロード**（`CHOICE` 待機中の行へのロード時は直前台詞も自動復元） |
 | **`L` トリガー + `X`** | **Multi-Sight サイトザッピング切替**（有効時に小次郎⇔まりな等の視点を即時切替、`SITE_LOCK` 中は `[SITE LOCKED]` 通知を表示してブロック） |
-| **`START` ボタン** | `vn_config_t.title_script` があればシステムメニュー（セーブ／ロード／話の切り替え／タイトルへ戻る／閉じる）。セーブとロードは 4 スロット（`VN_SAVE_SLOTS`、VMU のファイル KOSVN00〜03、1 つ約 9 ブロック）で、一覧には台本名と台詞の頭が出ます。`L+A` / `L+B` は最後に使ったスロットへのクイックセーブ／ロード。タイトル画面では `A` と同じ。`title_script` が無ければゲームループ終了 |
+| **`START` ボタン** | `vn_config_t.title_script` があればシステムメニュー（セーブ／ロード／話の切り替え／設定／タイトルへ戻る／閉じる）。「設定」では左右で文字の速さ（速い・普通・遅い）と BGM・声の音量（0〜7）を変え、VMU のファイル `<ID>CF` に残します。セーブとロードは 4 スロット（`VN_SAVE_SLOTS`）で、VMU のファイルは `<ID><スロット>A` / `B`（`<ID>` は `vn_config_t.app_id` の英数字 6 文字まで。新しい方を書き終えてから古い方を消すので、書いている途中で抜いても前のセーブが残ります。1 つ約 9 ブロック、書き込み中だけもう 9 ブロック）。VMU はどのポートの差し込み口でも使えます。一覧には台本名と台詞の頭が出ます。`L+A` / `L+B` は最後に使ったスロットへのクイックセーブ／ロード。タイトル画面では `A` と同じ。`title_script` が無ければゲームループ終了 |
 
 ---
 
@@ -459,7 +459,7 @@ while True:
 * **テスト:** `vn_config_t.autoplay`（スキップしながら選択肢を自動で選ぶ）, `autoplay_slow`（スキップせず声・効果音・演出を流す）, `autoplay_switch_every`
 * **テキスト / 選択肢 / 履歴:** `vn_text_set_speaker()`, `vn_text_set_dialogue()`, `vn_text_add_choice()`, `vn_backlog_push()`, `vn_backlog_set_visible()`
 * **スクリプト VM & Multi-Sight:** `vn_script_load()`, `vn_script_jump_label()`, `vn_script_call_label()`, `vn_script_return()`, `vn_script_advance()`, `vn_script_set_flag()`, `vn_script_get_flag()`, `vn_script_add_flag()`, `vn_script_get_bit()`, `vn_script_set_bit()`, `vn_set_movie_handler()`（`MOVIE` の再生関数を登録）, `vn_site_init()`, `vn_site_switch()`, `vn_site_get_active()`, `vn_site_is_enabled()`, `vn_site_set_locked()`, `vn_site_is_locked()`
-* **VMU（セーブ形式 `VN_SAVE_VERSION` = 8。バージョンが違う古いセーブは読み込まずに無効扱いにします）:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_draw_logo()`, `vn_vmu_set_icon()`（セーブファイルのアイコン 32x32・16 色）, `vn_vmu_set_desc()`（ファイル管理画面に出る名前）
+* **VMU（セーブ形式 `VN_SAVE_VERSION` = 9。バージョンが違う古いセーブは読み込まずに無効扱いにします）:** `vn_vmu_save()`, `vn_vmu_load()`, `vn_vmu_save_cfg()` / `vn_vmu_load_cfg()`（設定ファイル）, `vn_vmu_draw_logo()`, `vn_vmu_set_icon()`（セーブファイルのアイコン 32x32・16 色）, `vn_vmu_set_desc()`（ファイル管理画面に出る名前）
 * **サウンド:** `vn_audio_play_bgm()`, `vn_audio_stop_bgm()`, `vn_audio_play_se()`, `vn_audio_play_voice()`, `vn_audio_stop_voice()`
 * **LAN デバッグ:** `vn_netdbg_init()`, `vn_netdbg_log()`, `vn_netdbg_send_telemetry()`
 
