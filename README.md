@@ -71,7 +71,7 @@
 * **FNV-1a 32bit ラベルハッシュ & 高速条件式評価 (`kosvn_script.c`):** スクリプト読込時に全 `LABEL`（最大 128 個）の FNV-1a ハッシュを計算し、`GOTO` / `CALL` / `@call:` ジャンプおよび `IF` / `IF_AND` / `OPTION_IF` の比較演算を高速化。
 * **マルチサイト台詞保持・`CHOICE` 復帰保護・VMU `KVN2` フォーマット (`kosvn_script.c` / `kosvn_vmu.c`):** サイト切替時や `CHOICE` 行でのクイックロード時に直前の台詞テキスト・コールスタック・全 256 フラグ・カットイン状態を完全復元。
 
-### このブランチ（`feat/eve-ext`）で加えたエンジン機能
+### このブランチで加えたエンジン機能
 * **演出:** 背景のクロスフェード／羽根ワイプ（`BG <パス> <ms> [wipe]`）、黒い羽根のシャッター（`WIPE`）、重ね絵の枠指定クリアとトラック再生（`OVERLAY_CLEAR [枠]` / `OVERLAY_TRACK`）、口パクの人物指定（`SPEAKER` / `lip<N>` / `LIP_MAP`）
 * **音:** BGM のループ開始位置・曲番号・フェードアウト、場面の効果音（`SCENE_SE`）、ADPCM のボイスと `.LIP`
 * **スクリプト:** 1 ビットフラグ 4,608 個（`BIT` / `BIT_RANGE` / `IF_BIT` / `OPTION_BIT`）、`JUMP`、`MOVIE`、並行する話（`STORY_DEF` / `STORY` / `STORY_LOCAL_BITS` / `STORY_RESET`）、`SYSLOAD`、選択肢の地図表示（`MAP`）・`CANCEL`・`CHOICE_CURSOR`、絵に描かれた文字欄への対応（`TEXT_AREA` / `TEXTBOX`）
