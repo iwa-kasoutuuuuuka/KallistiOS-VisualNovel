@@ -16,9 +16,10 @@
 
 #include "kosvn_internal.h"
 
-static void build_vmu_path(int slot, char *out, size_t out_sz) {
+/* The memory card found by maple_enum_type: any port (A-D) and slot (1-2). */
+static void build_vmu_path(const maple_device_t *vmud, int slot, char *out, size_t out_sz) {
     int s = (slot < 0) ? 0 : (slot % 10);
-    snprintf(out, out_sz, "/vmu/a1/KOSVN%02d", s);
+    snprintf(out, out_sz, "/vmu/%c%d/KOSVN%02d", 'a' + vmud->port, vmud->unit, s);
 }
 
 /* Game-supplied icon / names (vn_vmu_set_icon / vn_vmu_set_desc) */
@@ -115,7 +116,7 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
     }
 
     char path[32];
-    build_vmu_path(slot, path, sizeof(path));
+    build_vmu_path(vmud, slot, path, sizeof(path));
     /* O_META: write the package as built. Without it the current fs_vmu
        treats the data as headerless, and on reading it strips the header,
        so vmu_pkg_parse() in vn_vmu_load() could never succeed. */
@@ -123,7 +124,7 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
     if(fd == FILEHND_INVALID) {
         free(pkg_out);
         dbglog(DBG_ERROR, "kosvn_vmu: open('%s') for writing failed\n", path);
-        return -1;
+        return -2;
     }
 
     ssize_t written = fs_write(fd, pkg_out, (size_t)pkg_size);
@@ -133,7 +134,7 @@ int vn_vmu_save(int slot, const vn_save_state_t *state) {
     if(written != (ssize_t)pkg_size || close_rc < 0) {
         dbglog(DBG_ERROR, "kosvn_vmu: write failed %d/%d (close %d)\n",
                (int)written, pkg_size, close_rc);
-        return -1;
+        return -2;
     }
 
     dbglog(DBG_INFO, "kosvn_vmu: saved %d bytes to %s\n", pkg_size, path);
@@ -151,7 +152,7 @@ int vn_vmu_load(int slot, vn_save_state_t *state_out) {
     }
 
     char path[32];
-    build_vmu_path(slot, path, sizeof(path));
+    build_vmu_path(vmud, slot, path, sizeof(path));
     file_t fd = fs_open(path, O_RDONLY | O_META);   /* raw: keep the package header */
     if(fd == FILEHND_INVALID) {
         dbglog(DBG_WARNING, "kosvn_vmu: save file '%s' not found\n", path);

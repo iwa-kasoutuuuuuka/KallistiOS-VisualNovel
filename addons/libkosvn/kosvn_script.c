@@ -28,6 +28,7 @@ static struct {
     bool             ended;
     bool             waiting_fx;
     uint32_t         wait_ms;      /* >0: WAIT timer, otherwise WAIT_FX */
+    uint32_t         bg_line1;     /* 1 + line of the last BG executed, 0 = none */
     vn_label_entry_t labels[VN_MAX_LABELS];
     int              label_count;
     int32_t          flags[VN_MAX_FLAGS];
@@ -214,6 +215,7 @@ void vn_script_unload(void) {
     memset(vm_st.site_dialogues, 0, sizeof(vm_st.site_dialogues));
     vm_st.ended = true;
     vm_st.waiting_fx = false;
+    vm_st.bg_line1 = 0U;
     vm_st.wait_ms = 0U;
     vm_st.path[0] = '\0';
     vn_text_set_site_badge("");
@@ -554,7 +556,14 @@ bool vn_script_is_ended(void) { return vm_st.ended; }
 /* After a load or story switch: rebuild what the screen showed at <line>
    (the BG and the overlays / speaker set after it), without running anything
    else. The BG from an earlier script is restored by the caller. */
-void vn_script_replay_scene(uint32_t line) {
+uint32_t vn_script_get_bg_line1(void) { return vm_st.bg_line1; }
+
+/* Rebuild the picture of a saved moment. bg_line1 (1 + line of the BG command
+   that was really executed) is used when known: the BG written just above the
+   saved line is often not the one on screen (hub labels are reached by GOTO
+   from other places). That BG and the OVERLAY lines right after it are
+   replayed, then NAME / TEXTBOX from the text above the saved line. */
+void vn_script_replay_scene(uint32_t line, uint32_t bg_line1) {
     if(line > vm_st.line_count)
         line = vm_st.line_count;
     uint32_t from = 0U;
@@ -566,9 +575,34 @@ void vn_script_replay_scene(uint32_t line) {
             break;
         }
     }
+    bool known = false;
+    if(bg_line1 > 0U && bg_line1 - 1U < vm_st.line_count) {
+        char cmd[32];
+        split_cmd(vm_st.lines[bg_line1 - 1U], cmd, sizeof(cmd));
+        known = strcmp(cmd, "BG") == 0;
+    }
+    if(known) {
+        vm_st.bg_line1 = bg_line1;    /* a later save keeps pointing at it */
+        for(uint32_t i = bg_line1 - 1U; i < vm_st.line_count; i++) {
+            char cmd[32];
+            const char *arg = split_cmd(vm_st.lines[i], cmd, sizeof(cmd));
+            if(i == bg_line1 - 1U) {
+                vn_overlay_clear_all();
+                vn_bg_set(arg);
+            } else if(strcmp(cmd, "OVERLAY") == 0) {
+                vn_overlay_command(arg);
+            } else if(strcmp(cmd, "OVERLAY_TRACK") == 0) {
+                vn_overlay_track(arg);
+            } else if(strcmp(cmd, "WAIT_FX") != 0) {
+                break;
+            }
+        }
+    }
     for(uint32_t i = from; i < line; i++) {
         char cmd[32];
         const char *arg = split_cmd(vm_st.lines[i], cmd, sizeof(cmd));
+        if(known && (strcmp(cmd, "BG") == 0 || strncmp(cmd, "OVERLAY", 7) == 0))
+            continue;
         if(strcmp(cmd, "BG") == 0) {
             vn_overlay_clear_all();
             vn_bg_set(arg);
@@ -602,8 +636,17 @@ void vn_script_replay_scene(uint32_t line) {
 }
 
 int vn_script_advance(void) {
+    uint32_t budget = 0U;
     while(vm_st.pc < vm_st.line_count) {
         uint32_t line_idx = vm_st.pc;
+        if(++budget > 20000U) {
+            /* a loop of non-blocking lines: stop here instead of hanging
+               (the line runs again on the next A press) */
+            dbglog(DBG_WARNING, "kosvn_script: no blocking line for 20000 commands at %lu\n",
+                   (unsigned long)(line_idx + 1U));
+            vm_st.cur_cmd_line = line_idx;
+            return 1;
+        }
         const char *line = vm_st.lines[vm_st.pc++];
         if(line[0] == '\0' || line[0] == '#')
             continue;
@@ -615,6 +658,7 @@ int vn_script_advance(void) {
             continue;
         } else if(strcmp(cmd, "BG") == 0) {
             /* BG <path> [ms] : ms = crossfade (PS \d 2), cut while skipping */
+            vm_st.bg_line1 = line_idx + 1U;
             vn_overlay_clear_all();
             if(vn_core_is_skipping())
                 vn_bg_set(arg);

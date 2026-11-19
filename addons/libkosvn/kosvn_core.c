@@ -18,6 +18,11 @@
 #include "kosvn_internal.h"
 
 #define BGM_CHUNK_BYTES  8192
+/* BGM: 64 KB = 1.5 s of 22 kHz PCM16. With the 8 KB of before, any stall of
+   the main loop over ~0.1 s (a picture or voice read from the disc, a VMU
+   save) replayed stale music on real hardware. Requests are at most half. */
+#define BGM_STREAM_BYTES 65536
+#define BGM_REQ_MAX      (BGM_STREAM_BYTES / 2)
 #define VN_SFX_CACHE_MAX 8
 
 typedef struct vn_sfx_entry {
@@ -132,26 +137,31 @@ static void *bgm_stream_cb(snd_stream_hnd_t hnd, int smp_req, int *smp_recv) {
         return NULL;
     }
 
-    int bytes = (smp_req > BGM_CHUNK_BYTES) ? BGM_CHUNK_BYTES : smp_req;
+    int bytes = (smp_req > BGM_REQ_MAX) ? BGM_REQ_MAX : smp_req;
     bytes &= ~3;
     if(bytes <= 0) {
         *smp_recv = 0;
         return NULL;
     }
+    /* alternate halves: KOS asks for the next block before the DMA of the
+       previous one has necessarily finished */
+    static int half = 0;
+    half ^= 1;
+    uint16_t *buf = core_st.bgm_chunk + (size_t)half * (BGM_REQ_MAX / 2);
 
     if(core_st.bgm_wav_fp) {
-        size_t got = fread(core_st.bgm_chunk, 1, (size_t)bytes, core_st.bgm_wav_fp);
+        size_t got = fread(buf, 1, (size_t)bytes, core_st.bgm_wav_fp);
         if(got < (size_t)bytes) {
             fseek(core_st.bgm_wav_fp, 44, SEEK_SET);
             size_t rest = (size_t)bytes - got;
-            size_t got2 = fread((uint8_t *)core_st.bgm_chunk + got, 1, rest, core_st.bgm_wav_fp);
+            size_t got2 = fread((uint8_t *)buf + got, 1, rest, core_st.bgm_wav_fp);
             if(got + got2 < (size_t)bytes) {
-                memset((uint8_t *)core_st.bgm_chunk + got + got2, 0,
+                memset((uint8_t *)buf + got + got2, 0,
                        (size_t)bytes - (got + got2));
             }
         }
         *smp_recv = bytes;
-        return core_st.bgm_chunk;
+        return buf;
     }
 
     int samples = bytes / 2;
@@ -168,11 +178,11 @@ static void *bgm_stream_cb(snd_stream_hnd_t hnd, int smp_req, int *smp_recv) {
         uint32_t idx2 = ((t * (freq / 2U) * 32U) / 22050U) & 31U;
         int32_t env = 255 - (int32_t)(((t % 33075U) * 180U) / 33075U);
         int32_t val = ((int32_t)sin32_lut[idx1] + (int32_t)sin32_lut[idx2] / 2) * env / 1024;
-        core_st.bgm_chunk[i] = (int16_t)val;
+        buf[i] = (int16_t)val;
     }
 
     *smp_recv = bytes;
-    return core_st.bgm_chunk;
+    return buf;
 }
 
 bool vn_core_is_skipping(void) {
@@ -196,7 +206,7 @@ int vn_audio_play_bgm(const char *path_or_spec) {
     }
 
     if(!core_st.bgm_chunk) {
-        core_st.bgm_chunk = (uint16_t *)memalign(32, BGM_CHUNK_BYTES);
+        core_st.bgm_chunk = (uint16_t *)memalign(32, 2U * BGM_REQ_MAX);
         if(!core_st.bgm_chunk)
             return -1;
     }
@@ -216,7 +226,7 @@ int vn_audio_play_bgm(const char *path_or_spec) {
         fseek(core_st.bgm_wav_fp, 44, SEEK_SET);
     }
 
-    core_st.bgm_stream = snd_stream_alloc(bgm_stream_cb, BGM_CHUNK_BYTES);
+    core_st.bgm_stream = snd_stream_alloc(bgm_stream_cb, BGM_STREAM_BYTES);
     if(core_st.bgm_stream == SND_STREAM_INVALID) {
         if(core_st.bgm_wav_fp) {
             fclose(core_st.bgm_wav_fp);
@@ -329,7 +339,8 @@ int vn_audio_play_se(const char *path_or_spec) {
     return 0;
 }
 
-static uint8_t loop_buf[BGM_CHUNK_BYTES] __attribute__((aligned(32)));
+static uint8_t loop_bufs[2][BGM_CHUNK_BYTES] __attribute__((aligned(32)));
+static int loop_turn = 0;   /* the other one may still be in a G2 DMA */
 
 /* Silence for the stream buffer: 0 for PCM; for AICA ADPCM nibbles 0 / 8
    (+ / - the smallest step) so the decoder stays at 0. */
@@ -340,8 +351,8 @@ static void fill_silence(uint8_t *p, uint32_t n) {
 static void *voice_stream_cb(snd_stream_hnd_t hnd, int smp_req, int *smp_recv) {
     (void)hnd;
     uint32_t want = (smp_req > 0) ? (uint32_t)smp_req : 0U;
-    if(want > sizeof(loop_buf))
-        want = sizeof(loop_buf);
+    if(want > sizeof(loop_bufs[0]))
+        want = sizeof(loop_bufs[0]);
     if(!core_st.voice_pcm) {
         *smp_recv = 0;
         return NULL;
@@ -359,6 +370,8 @@ static void *voice_stream_cb(snd_stream_hnd_t hnd, int smp_req, int *smp_recv) {
     /* Last part of the clip (or past its end): always hand over a full buffer.
        Returning nothing makes the AICA replay the old buffer contents, which
        on real hardware repeats the clip's last syllable until the release. */
+    loop_turn ^= 1;
+    uint8_t *loop_buf = loop_bufs[loop_turn];
     memcpy(loop_buf, core_st.voice_pcm + core_st.voice_pos, left);
     if(core_st.voice_loop && core_st.voice_bytes >= want - left) {
         /* looping scene SE: join the end and the start, no silent gap */
@@ -789,6 +802,7 @@ static void capture_pos(vn_story_pos_t *p) {
     vn_copy_str(p->script_path, sizeof(p->script_path), vn_script_get_path());
     vn_copy_str(p->bg_name, sizeof(p->bg_name), vn_gfx_get_bg_name());
     vn_copy_str(p->bgm_name, sizeof(p->bgm_name), vn_audio_get_bgm_name());
+    p->bg_line1 = vn_script_get_bg_line1();
     local_bits_store(p);
 }
 
@@ -817,7 +831,7 @@ static int resume_pos(const vn_story_pos_t *p) {
             return -1;
     }
     vn_bg_set(p->bg_name);
-    vn_script_replay_scene(p->script_line);
+    vn_script_replay_scene(p->script_line, p->bg_line1);
     if(p->bgm_name[0] != '\0')
         vn_audio_play_bgm(p->bgm_name);
     else
@@ -863,6 +877,7 @@ static void switch_story(int id) {
 
 /* ---- Save slots ---------------------------------------------------------- */
 #define NOTICE_SAVED     "\x83\x5a\x81\x5b\x83\x75\x82\xb5\x82\xdc\x82\xb5\x82\xbd"              /* セーブしました */
+#define NOTICE_SAVE_FAIL "\x83\x5a\x81\x5b\x83\x75\x82\xc5\x82\xab\x82\xdc\x82\xb9\x82\xf1\x82\xc5\x82\xb5\x82\xbd" /* セーブできませんでした */
 #define NOTICE_NO_VMU    "\x82\x75\x82\x6c\x82\x74\x82\xaa\x8c\xa9\x82\xc2\x82\xa9\x82\xe8\x82\xdc\x82\xb9\x82\xf1" /* ＶＭＵが見つかりません */
 #define NOTICE_NO_SAVE   "\x83\x5a\x81\x5b\x83\x75\x83\x66\x81\x5b\x83\x5e\x82\xaa\x82\xa0\x82\xe8\x82\xdc\x82\xb9\x82\xf1" /* セーブデータがありません */
 #define NOTICE_LOAD_FAIL "\x83\x8d\x81\x5b\x83\x68\x82\xc5\x82\xab\x82\xdc\x82\xb9\x82\xf1\x82\xc5\x82\xb5\x82\xbd" /* ロードできませんでした */
@@ -897,6 +912,7 @@ static void handle_save(int slot) {
     st.script_line = vn_script_get_line();
     vn_copy_str(st.script_path, sizeof(st.script_path), vn_script_get_path());
     vn_copy_str(st.bg_name, sizeof(st.bg_name), vn_gfx_get_bg_name());
+    st.bg_line1 = vn_script_get_bg_line1();
     for(int i = 0; i < VN_MAX_SPRITES; i++) {
         vn_copy_str(st.char_names[i], sizeof(st.char_names[i]),
                     vn_gfx_get_char_name((vn_sprite_pos_t)i));
@@ -925,13 +941,15 @@ static void handle_save(int slot) {
     sjis_head(head, sizeof(head), vn_text_get_dialogue(), 26U);
     snprintf(st.label, sizeof(st.label), "%s %s", name, head);
 
-    if(vn_vmu_save(slot, &st) == 0) {
+    int rc = vn_vmu_save(slot, &st);
+    if(rc == 0) {
         notice(NOTICE_SAVED, 1800U);
         core_st.last_slot = slot;
         vn_netdbg_log("Saved slot %d at %s line %lu", slot, st.script_path,
                       (unsigned long)st.script_line);
     } else {
-        notice(NOTICE_NO_VMU, 1800U);
+        /* -1: no memory card; -2: found but not written (full, removed, ...) */
+        notice(rc == -2 ? NOTICE_SAVE_FAIL : NOTICE_NO_VMU, 2400U);
     }
 }
 
@@ -956,6 +974,7 @@ static int handle_load(int slot) {
     vn_copy_str(p.script_path, sizeof(p.script_path), st.script_path);
     vn_copy_str(p.bg_name, sizeof(p.bg_name), st.bg_name);
     vn_copy_str(p.bgm_name, sizeof(p.bgm_name), st.bgm_name);
+    p.bg_line1 = st.bg_line1;
 
     /* resume_pos reloads the script, so import the call stack afterwards. */
     reset_presentation();

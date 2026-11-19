@@ -25,7 +25,7 @@ __BEGIN_DECLS
 #define VN_MAX_CALL_DEPTH  8
 #define VN_BACKLOG_SIZE    32
 #define VN_SAVE_MAGIC      0x4B564E32U /* "KVN2" */
-#define VN_SAVE_VERSION    6U
+#define VN_SAVE_VERSION    7U
 #define VN_SAVE_SLOTS      4      /* VMU files <app>00..03, about 9 blocks each */
 #define VN_MAX_STORIES     3      /* parallel stories (STORY_DEF), e.g. two heroes */
 
@@ -86,6 +86,7 @@ typedef struct vn_story_pos {
     char     bg_name[64];
     char     bgm_name[64];
     uint32_t local_bits[4];   /* STORY_LOCAL_BITS range (bit 0 = range start) */
+    uint32_t bg_line1;        /* 1 + line of the BG command that was really shown, 0 = unknown */
 } vn_story_pos_t;
 
 typedef struct vn_save_state {
@@ -108,6 +109,7 @@ typedef struct vn_save_state {
     int32_t        story_cur;                  /* story being played, -1 = none */
     vn_story_pos_t stories[VN_MAX_STORIES];    /* where each story was left */
     char           label[48];                  /* slot list: script + start of the line (Shift-JIS) */
+    uint32_t       bg_line1;                   /* 1 + line of the BG really shown, 0 = unknown */
 } vn_save_state_t;
 
 /* Data path remap: files whose path starts with <from> are opened at <to> +
@@ -130,6 +132,7 @@ int  vn_tex_create_procedural_bg(vn_tex_t *tex, uint16_t w, uint16_t h, int styl
 int  vn_tex_create_procedural_portrait(vn_tex_t *tex, uint16_t w, uint16_t h, int char_id, int expr_id);
 void vn_tex_free(vn_tex_t *tex);
 void vn_tex_free_later(vn_tex_t *tex);  /* free after the PVR is done with it */
+bool vn_tex_free_pending(void);         /* wait for the render, free the textures waiting to be freed (e.g. before a movie) */
 int  vn_bg_set(const char *asset_spec);
 int  vn_bg_crossfade(const char *asset_spec);   /* "<path> <ms>" */
 int  vn_char_set(vn_sprite_pos_t pos, const char *asset_spec);

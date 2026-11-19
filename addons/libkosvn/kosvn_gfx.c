@@ -13,7 +13,7 @@
 
 #include "kosvn_internal.h"
 
-#define VN_TEX_CACHE_MAX 16
+#define VN_TEX_CACHE_MAX 12   /* 12 x 256 KB BGs + 1 MB text canvas leave room for overlays */
 #define VN_HDR_CACHE_MAX 16
 
 typedef enum vn_tex_kind {
@@ -184,7 +184,9 @@ void vn_tex_free_later(vn_tex_t *tex) {
         tex_grave[i].ptr = tex->vram_ptr;
         tex_grave[i].frames = 3;
     } else {
-        pvr_wait_ready();             /* full: wait for the render, then free */
+        /* full: let the frame in flight finish rendering, then free */
+        pvr_wait_ready();
+        pvr_wait_render_done();
         pvr_mem_free(tex->vram_ptr);
     }
     tex->vram_ptr = NULL;
@@ -196,6 +198,35 @@ static void tex_grave_tick(void) {
             pvr_mem_free(tex_grave[i].ptr);
             tex_grave[i].ptr = NULL;
         }
+}
+
+/* Free everything waiting in the grave now (after the render in flight). */
+bool vn_tex_free_pending(void) {
+    bool any = false;
+    for(int i = 0; i < VN_TEX_GRAVE; i++)
+        any |= (tex_grave[i].ptr != NULL);
+    if(!any)
+        return false;
+    pvr_wait_ready();
+    pvr_wait_render_done();
+    for(int i = 0; i < VN_TEX_GRAVE; i++)
+        if(tex_grave[i].ptr) {
+            pvr_mem_free(tex_grave[i].ptr);
+            tex_grave[i].ptr = NULL;
+        }
+    return true;
+}
+
+/* VRAM for a texture: when the heap is full, the textures in the grave are
+   the first to go (a story switch / load can replace several pictures in one
+   frame, and the grave then holds the VRAM they need). */
+static pvr_ptr_t vram_alloc(size_t bytes) {
+    if(pvr_mem_available() < bytes + 65536U)
+        vn_tex_free_pending();        /* free first rather than fail (and log) */
+    pvr_ptr_t p = pvr_mem_malloc(bytes);
+    if(!p && vn_tex_free_pending())
+        p = pvr_mem_malloc(bytes);
+    return p;
 }
 
 void vn_tex_free(vn_tex_t *tex) {
@@ -237,7 +268,7 @@ int vn_tex_load_raw16(vn_tex_t *tex, const char *path, uint16_t w, uint16_t h, u
     }
 
     vn_tex_free(tex);
-    tex->vram_ptr = pvr_mem_malloc(bytes);
+    tex->vram_ptr = vram_alloc(bytes);
     if(!tex->vram_ptr) {
         free(tmp);
         dbglog(DBG_ERROR, "kosvn_gfx: out of PVR VRAM (%zu bytes)\n", bytes);
@@ -340,7 +371,7 @@ int vn_tex_create_procedural_bg(vn_tex_t *tex, uint16_t w, uint16_t h, int style
     }
 
     vn_tex_free(tex);
-    tex->vram_ptr = pvr_mem_malloc(bytes);
+    tex->vram_ptr = vram_alloc(bytes);
     if(!tex->vram_ptr) {
         free(pix);
         return -1;
@@ -489,7 +520,7 @@ int vn_tex_create_procedural_portrait(vn_tex_t *tex, uint16_t w, uint16_t h, int
     }
 
     vn_tex_free(tex);
-    tex->vram_ptr = pvr_mem_malloc(bytes);
+    tex->vram_ptr = vram_alloc(bytes);
     if(!tex->vram_ptr) {
         free(pix);
         return -1;
@@ -573,7 +604,7 @@ static int create_procedural_cutin(vn_tex_t *tex, const char *tag) {
     }
 
     vn_tex_free(tex);
-    tex->vram_ptr = pvr_mem_malloc(bytes);
+    tex->vram_ptr = vram_alloc(bytes);
     if(!tex->vram_ptr) {
         free(pix);
         return -1;
@@ -661,7 +692,7 @@ static int load_raw16_padded(vn_tex_t *tex, const char *path, uint16_t img_w, ui
         memcpy(tmp + (size_t)y * tex_w, tmp + (size_t)(img_h - 1) * tex_w, (size_t)tex_w * 2U);
 
     vn_tex_free(tex);
-    tex->vram_ptr = pvr_mem_malloc(bytes);
+    tex->vram_ptr = vram_alloc(bytes);
     if(!tex->vram_ptr) {
         free(tmp);
         dbglog(DBG_ERROR, "kosvn_gfx: out of PVR VRAM (%zu bytes)\n", bytes);
